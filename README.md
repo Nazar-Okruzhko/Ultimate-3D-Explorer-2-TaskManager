@@ -1,2 +1,2 @@
-# Ultimate: Explorer
-<img width="1145" height="693" alt="Screenshot (4427)" src="https://github.com/user-attachments/assets/544eea46-afc7-41ec-8353-68b3909e506a" />
+# Ultimate 3D: Explorer
+<img width="1119" height="759" alt="Screenshot (5327)" src="https://github.com/user-attachments/assets/245dcf4e-993e-470e-b003-c90bc2063dfe" />
