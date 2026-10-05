@@ -153,7 +153,7 @@ namespace WinExplorer
             // Special folders each have a unique icon ? key by path, not generic "__dir__"
             if (Directory.Exists(path)) return "dir:" + path.ToLower();
             string ext = Path.GetExtension(path).ToLower();
-            // Per-file types (exe/lnk/ico etc.) each have a unique icon – key by full path
+            // Per-file types (exe/lnk/ico etc.) each have a unique icon ? key by full path
             if (PerFileExt.Contains(ext)) return "file:" + path.ToLower();
             return ext.Length > 0 ? ext : path.ToLower();
         }
@@ -166,6 +166,11 @@ namespace WinExplorer
         {
             var k=Key(path); if(_s16.TryGetValue(k,out var c))return c;
             var img=GetIcon(path,true); return _s16[k]=img;
+        }
+        public static Image LargeIconForced(string path)
+        {
+            var k=Key(path); if(_s32.TryGetValue(k,out var c))return c;
+            var img=GetIcon(path,false); return _s32[k]=img;
         }
         public static Image SmallIcon(string path)
         {
@@ -828,14 +833,30 @@ namespace WinExplorer
         {
             int idx=IdxAtDocY(_scrollY+e.Y); if(idx<0&&e.Y>0)idx=-1;
             if(idx!=_hov){_hov=idx;Invalidate();}
+            // Hand cursor only when pointer is at or past 120px (past the indent/expand zone)
+            Cursor = e.X >= 120 ? Cursors.Hand : Cursors.Default;
         }
         void OnMD(object s,MouseEventArgs e)
         {
             int idx=IdxAtDocY(_scrollY+e.Y); if(idx<0||idx>=_flat.Count)return;
             var n=_flat[idx]; int indent=ROOT_X+n.Level*LVL;
             bool hasK=n.Children.Count>0||n.HasChildren;
-            if(hasK&&e.X>=indent-4&&e.X<=indent+ARW+2){Toggle(n);return;}
-            _sel=n;Invalidate();if(e.Button==MouseButtons.Left)NodeSelected?.Invoke(n);
+            if(e.Button==MouseButtons.Left&&hasK&&e.X>=indent-4&&e.X<=indent+ARW+2){Toggle(n);return;}
+            _sel=n; Invalidate();
+            // Fire on both left and right click so right-click also selects + navigates
+            NodeSelected?.Invoke(n);
+            if(e.Button==MouseButtons.Right) ShowTreeCtxMenu(n, e.Location);
+        }
+        void ShowTreeCtxMenu(TreeNode2 n, Point pt)
+        {
+            var m=MI.MakeMenu();
+            m.Items.Add(MI.Item("Open","folder",(s,e2)=>NodeSelected?.Invoke(n)));
+            m.Items.Add(MI.Item("Open in new window","folder",(s,e2)=>{if(n.Path!=null)try{System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(n.Path){UseShellExecute=true});}catch{}}));
+            m.Items.Add(MI.Sep());
+            m.Items.Add(MI.Item("Pin to Quick access","quick_access",null));
+            m.Items.Add(MI.Sep());
+            m.Items.Add(MI.Item("Properties","properties",(s,e2)=>{if(n.Path!=null&&System.IO.Directory.Exists(n.Path))PropertiesDialog.Show(n.Path);}));
+            m.Show(this, pt);
         }
         void Toggle(TreeNode2 n){if(!n.Expanded){if(n.Children.Count==0&&n.Path!=null&&!n.IsVirtual)LoadFs(n);n.Expanded=true;}else n.Expanded=false;Rebuild();}
         void LoadFs(TreeNode2 n){try{foreach(var d in Directory.GetDirectories(n.Path))try{n.Children.Add(new TreeNode2{Label=Path.GetFileName(d),Path=d,IconName="folder",Parent=n,Level=n.Level+1,HasChildren=true});}catch{}n.HasChildren=false;}catch{}}
@@ -1388,88 +1409,167 @@ namespace WinExplorer
     // WebBrowser-based video player ? works with any codec Windows has installed
     class VideoPanel:Panel
     {
-        [DllImport("winmm.dll",CharSet=CharSet.Unicode)]
-        static extern int mciSendStr(string cmd,StringBuilder ret,int retLen,IntPtr hwnd);
+        // Use explicit EntryPoint so .NET 6 finds the Unicode export in winmm.dll
+        [DllImport("winmm.dll",EntryPoint="mciSendStringW",CharSet=CharSet.Unicode,ExactSpelling=true)]
+        static extern int MciSend(string cmd,StringBuilder ret,int retLen,IntPtr hwnd);
  
-        const string VA="wex_v";
-        string _vidPath; bool _playing; Image _thumb; Rectangle _playBtn;
+        string _vidPath; Image _thumb; Rectangle _openBtn,_thumbRect;
+        string _durationStr=""; string _codecStr="";
  
-        public VideoPanel()
-        {
-            BackColor=Color.FromArgb(20,20,20); DoubleBuffered=true;
-            SetStyle(ControlStyles.AllPaintingInWmPaint,true);
-            MouseClick+=OnClick;
-            Resize+=(s,e)=>{if(_playing)PutWindow();};
-        }
+        public VideoPanel(){BackColor=Color.FromArgb(18,18,20);DoubleBuffered=true;MouseClick+=OnClick;}
  
         public void Load(string path)
         {
-            StopVid(); _vidPath=path; _playing=false; _thumb=null;
-            if(path!=null)
+            StopVid(); _vidPath=path; _thumb=null; _durationStr=""; _codecStr="";
+            if(path==null){Invalidate();return;}
+            // Load thumbnail on background thread
+            System.Threading.Tasks.Task.Run(()=>
             {
-                try{_thumb=Shell.Thumbnail(path,256);}catch{}
-                if(_thumb==null)_thumb=Shell.LargeIcon(path)??Icons.Get("videos");
-            }
+                Image th=null;
+                try{th=Shell.Thumbnail(path,480);}catch{}
+                if(th==null)try{th=Shell.LargeIcon(path);}catch{}
+                // Try MCI for duration (works for AVI/WMV; OK to fail for MP4/MKV)
+                string dur=""; string alias="wex_dur_"+System.Threading.Thread.CurrentThread.ManagedThreadId;
+                try
+                {
+                    var sb=new StringBuilder(128);
+                    if(MciSend("open \""+path+"\" alias "+alias,sb,127,IntPtr.Zero)==0)
+                    {
+                        var sb2=new StringBuilder(64);
+                        MciSend("set "+alias+" time format milliseconds",null,0,IntPtr.Zero);
+                        MciSend("status "+alias+" length",sb2,63,IntPtr.Zero);
+                        MciSend("close "+alias,null,0,IntPtr.Zero);
+                        if(long.TryParse(sb2.ToString().Trim(),out long ms)&&ms>0)
+                        {
+                            var ts=TimeSpan.FromMilliseconds(ms);
+                            dur=ts.Hours>0?ts.ToString(@"h\:mm\:ss"):ts.ToString(@"m\:ss");
+                        }
+                    }
+                }catch{}
+                // Fallback: read container header for duration (MP4/MKV)
+                if(dur.Length==0)dur=ReadContainerDuration(path);
+                string ext=Path.GetExtension(path).ToUpper().TrimStart('.');
+                try{if(!IsDisposed)BeginInvoke((Action)(()=>{_thumb=th;_durationStr=dur;_codecStr=ext;Invalidate();}));}catch{}
+            });
             Invalidate();
+        }
+ 
+        // Quick heuristic duration read from MP4 (mvhd box) or MKV (Segment/Info)
+        static string ReadContainerDuration(string path)
+        {
+            try
+            {
+                string ext=Path.GetExtension(path).ToLower();
+                using var fs=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.Read);
+                using var br=new BinaryReader(fs);
+                if(ext==".mp4"||ext==".m4v"||ext==".mov")
+                {
+                    // Scan for mvhd box (contains duration + timescale)
+                    byte[] buf=new byte[Math.Min(524288,(int)fs.Length)];
+                    fs.Read(buf,0,buf.Length);
+                    for(int i=0;i<buf.Length-20;i++)
+                    {
+                        if(buf[i]=='m'&&buf[i+1]=='v'&&buf[i+2]=='h'&&buf[i+3]=='d')
+                        {
+                            int off=i+4; // version+flags
+                            bool v1=buf[off]==1; off++;
+                            off+=3; // flags
+                            if(v1)off+=16;else off+=8; // skip times
+                            uint ts2=v1?(uint)((buf[off]<<24)|(buf[off+1]<<16)|(buf[off+2]<<8)|buf[off+3]):
+                                        (uint)((buf[off]<<24)|(buf[off+1]<<16)|(buf[off+2]<<8)|buf[off+3]);
+                            off+=4;
+                            ulong dur2=v1?(ulong)(((long)buf[off]<<56)|((long)buf[off+1]<<48)|((long)buf[off+2]<<40)|((long)buf[off+3]<<32)|((long)buf[off+4]<<24)|(buf[off+5]<<16)|(buf[off+6]<<8)|buf[off+7]):
+                                         (uint)((buf[off]<<24)|(buf[off+1]<<16)|(buf[off+2]<<8)|buf[off+3]);
+                            if(ts2>0&&dur2>0){var t=TimeSpan.FromSeconds((double)dur2/ts2);return t.Hours>0?t.ToString(@"h\:mm\:ss"):t.ToString(@"m\:ss");}
+                            break;
+                        }
+                    }
+                }
+            }catch{}
+            return "";
         }
  
         public void StopVid()
         {
-            if(!_playing)return;
-            try{mciSendStr("stop "+VA,null,0,IntPtr.Zero);}catch{}
-            try{mciSendStr("close "+VA,null,0,IntPtr.Zero);}catch{}
-            _playing=false;
+            // Nothing to stop in thumbnail-preview mode
         }
  
-        void PutWindow()
-        {
-            try{mciSendStr("put "+VA+" window at 0 0 "+Width+" "+Height,null,0,IntPtr.Zero);}catch{}
-        }
- 
-        void OnClick(object s,MouseEventArgs e)
+        void OnClick(object sender,MouseEventArgs e)
         {
             if(_vidPath==null)return;
-            if(_playing){StopVid();Invalidate();return;}
-            if(!_playBtn.Contains(e.Location))return;
-            // Open file with MCI ? let it auto-detect the codec
-            var sb=new StringBuilder(256);
-            int r=mciSendStr("open \""+_vidPath+"\" alias "+VA,sb,255,IntPtr.Zero);
-            if(r==0)
-            {
-                // Route video output to THIS panel's HWND
-                mciSendStr("window "+VA+" handle "+Handle.ToString(),null,0,IntPtr.Zero);
-                mciSendStr("put "+VA+" window at 0 0 "+Width+" "+Height,null,0,IntPtr.Zero);
-                mciSendStr("play "+VA,null,0,IntPtr.Zero);
-                _playing=true;
-            }
-            else
-            {
-                // MCI failed ? open in default player
-                try{Process.Start(new ProcessStartInfo(_vidPath){UseShellExecute=true});}catch{}
-            }
-            Invalidate();
+            if(_openBtn.Contains(e.Location)||_thumbRect.Contains(e.Location))
+                try{Process.Start(new ProcessStartInfo(_vidPath){UseShellExecute=true});}catch(Exception ex){MessageBox.Show(ex.Message);}
         }
  
         protected override void OnPaint(PaintEventArgs e)
         {
-            var g=e.Graphics; g.Clear(Color.FromArgb(20,20,20));
-            if(!_playing&&_thumb!=null)
+            var g=e.Graphics; g.Clear(BackColor);
+            g.SmoothingMode=SmoothingMode.AntiAlias;
+            g.TextRenderingHint=TextRenderingHint.ClearTypeGridFit;
+            int cx=Width/2,cy=Height/2;
+            if(_vidPath==null){using var sf=new StringFormat{Alignment=StringAlignment.Center,LineAlignment=StringAlignment.Center};g.DrawString("No video selected",Th.UiFont,Brushes.DimGray,ClientRectangle,sf);return;}
+            // Thumbnail
+            int thumbH=Height-64;int thumbW=Width-8;
+            if(_thumb!=null)
             {
-                float sc=Math.Min((float)Width/_thumb.Width,(float)Height/_thumb.Height);
-                int w=(int)(_thumb.Width*sc),h=(int)(_thumb.Height*sc);
-                g.DrawImage(_thumb,(Width-w)/2,(Height-h)/2,w,h);
+                float sc=Math.Min((float)thumbW/_thumb.Width,(float)thumbH/_thumb.Height);
+                int tw=(int)(_thumb.Width*sc),th=(int)(_thumb.Height*sc);
+                int tx=(Width-tw)/2,ty=4;
+                _thumbRect=new Rectangle(tx,ty,tw,th);
+                g.DrawImage(_thumb,_thumbRect);
+                // Dark gradient overlay at bottom of thumbnail for text
+                using var gb=new System.Drawing.Drawing2D.LinearGradientBrush(
+                    new Rectangle(tx,ty+th-30,tw,30),Color.Transparent,Color.FromArgb(160,0,0,0),
+                    System.Drawing.Drawing2D.LinearGradientMode.Vertical);
+                g.FillRectangle(gb,tx,ty+th-30,tw,30);
+                // Duration badge top-right
+                if(_durationStr.Length>0)
+                {
+                    var tf=new StringFormat{Alignment=StringAlignment.Far};
+                    using var bb=new SolidBrush(Color.FromArgb(180,0,0,0));
+                    var tr=new RectangleF(tx+tw-70,ty+th-22,68,18);
+                    g.FillRectangle(bb,tr); g.DrawString(_durationStr,Th.UiSmall,Brushes.White,tr,tf);
+                }
+                // Codec badge top-left
+                if(_codecStr.Length>0)
+                {
+                    using var bb2=new SolidBrush(Color.FromArgb(200,30,30,30));
+                    var cr=new RectangleF(tx,ty,36,16);g.FillRectangle(bb2,cr);
+                    g.DrawString(_codecStr,Th.UiSmall,Brushes.LightGray,cr,new StringFormat{Alignment=StringAlignment.Center,LineAlignment=StringAlignment.Center});
+                }
+                // Play circle overlay
+                int pr=28,px=cx-pr,py=ty+(th/2)-pr;
+                using var pa=new SolidBrush(Color.FromArgb(190,0,0,0));
+                g.FillEllipse(pa,px,py,pr*2,pr*2);
+                // Play triangle
+                var tri=new System.Drawing.Point[]{new(px+pr-8,py+pr),new(px+pr+12,py+pr),new(px+pr-8,py+pr-12)};
+                // Proper right-pointing triangle
+                int tx2=px+pr+2,ty2=py+pr;
+                var triPts=new System.Drawing.Point[]{new(tx2-10,ty2-12),new(tx2+12,ty2),new(tx2-10,ty2+12)};
+                g.FillPolygon(Brushes.White,triPts);
             }
-            int bx=Width/2-18,by=Math.Max(4,Height-46);
-            _playBtn=new Rectangle(bx-4,by-4,44,38);
-            using(var bb=new SolidBrush(Color.FromArgb(190,0,0,0)))g.FillEllipse(bb,bx,by,36,30);
-            if(!_playing)g.FillPolygon(Brushes.White,new[]{new Point(bx+10,by+6),new Point(bx+10,by+24),new Point(bx+27,by+15)});
-            else{g.FillRectangle(Brushes.White,bx+8,by+7,5,16);g.FillRectangle(Brushes.White,bx+19,by+7,5,16);}
-            string lbl=_vidPath!=null?Path.GetFileName(_vidPath)+(_playing?" ? Click to stop":" ? Click to play"):"";
-            if(lbl.Length>0)using(var fmt=new StringFormat{Alignment=StringAlignment.Center})
-                g.DrawString(lbl,Th.UiSmall,new SolidBrush(Color.FromArgb(180,255,255,255)),new RectangleF(0,by+36,Width,18),fmt);
+            else
+            {
+                _thumbRect=new Rectangle(cx-32,cy-48,64,64);
+                var ico=Icons.Get("videos");
+                if(ico!=null)g.DrawImage(ico,_thumbRect);
+                g.DrawString("Loading...",Th.UiSmall,Brushes.DimGray,new RectangleF(0,cy+24,Width,20),new StringFormat{Alignment=StringAlignment.Center});
+            }
+            // Bottom bar: filename + Open button
+            int bby=Height-56;
+            string fname=Path.GetFileName(_vidPath);
+            using(var sf=new StringFormat{Trimming=StringTrimming.EllipsisCharacter,LineAlignment=StringAlignment.Center,FormatFlags=StringFormatFlags.NoWrap})
+                g.DrawString(fname,Th.UiFont,Brushes.LightGray,new RectangleF(4,bby,Width-96,22),sf);
+            // "Open" button
+            int bw=82,bh=26,bx=Width-bw-4,by=bby-2;
+            _openBtn=new Rectangle(bx,by,bw,bh);
+            using(var bb=new SolidBrush(Color.FromArgb(0,120,215)))g.FillRectangle(bb,_openBtn);
+            using(var sf=new StringFormat{Alignment=StringAlignment.Center,LineAlignment=StringAlignment.Center})
+                g.DrawString("Open in Player",Th.UiSmall,Brushes.White,new RectangleF(bx,by,bw,bh),sf);
         }
     }
  
+    
     class PropBox:Panel
     {
         public TextBox TB;
@@ -1635,7 +1735,7 @@ namespace WinExplorer
             int lw=Width-(_vsb.Visible?_vsb.Width:0);
             // Header
             g.FillRectangle(new SolidBrush(Color.FromArgb(228,236,245)),0,0,lw,20);
-            string hdr=_archPath!=null?Path.GetFileName(_archPath)+" — "+_entries.Count+" entries":"Archive";
+            string hdr=_archPath!=null?Path.GetFileName(_archPath)+" ? "+_entries.Count+" entries":"Archive";
             g.DrawString(hdr,Th.UiSmall,Brushes.DimGray,new RectangleF(4,2,lw-8,16));
             // Entries
             var fmt=new StringFormat{LineAlignment=StringAlignment.Center,Trimming=StringTrimming.EllipsisCharacter,FormatFlags=StringFormatFlags.NoWrap};
@@ -1748,6 +1848,7 @@ namespace WinExplorer
             _btnHex.BackColor=hex?Th.SelFill:Color.Transparent;
             ShowCtrl(hex?_hexPanel:_activePreview);
         }
+ 
         void ShowCtrl(Control c)
         {
             _picBox.Visible=c==_picBox; _txtBox.Visible=c==_txtBox; _rawTxtBox.Visible=c==_rawTxtBox; _hexPanel.Visible=c==_hexPanel;
@@ -1801,7 +1902,7 @@ namespace WinExplorer
                     _picBox.Image?.Dispose();
                     if(IsGdiImg(ext))
                     {
-                        // WEBP may fail on older GDI+ / Windows versions — fall back to shell thumb
+                        // WEBP may fail on older GDI+ / Windows versions ? fall back to shell thumb
                         bool _loaded=false;
                         if(ext==".webp"||ext==".ga")
                         {
@@ -1817,7 +1918,7 @@ namespace WinExplorer
                             }
                             catch
                             {
-                                // GDI+ failed (e.g. animated WebP, unsupported variant) — use shell thumb
+                                // GDI+ failed (e.g. animated WebP, unsupported variant) ? use shell thumb
                                 var _fb=Shell.Thumbnail(item.FullPath,Math.Min(Width,Height));
                                 _picBox.Image=_fb;
                             }
@@ -2475,7 +2576,7 @@ namespace WinExplorer
                 var it=_items[i]; int y=HDR_H+i*ROW_H-_scrollY;
                 if(y+ROW_H<=HDR_H)continue; if(y>Height)break;
                 bool sel=_sel.Contains(i),hov=i==_hovRow,dndHov=i==_dndHovRow;
-                var row=new Rectangle(ITEM_INDENT,y,Math.Max(0,Math.Min(tw-ITEM_INDENT+15,lw-ITEM_INDENT)),ROW_H-1);
+                var row=new Rectangle(ITEM_INDENT,y,Math.Max(0,Math.Min(tw-ITEM_INDENT+15,lw-ITEM_INDENT)),ROW_H);
                 if(sel){if(_focused)Th.FillSel(g,row);else if(it.IsDirectory){using(var b=new SolidBrush(Th.InactiveDirFill))g.FillRectangle(b,row);}else{using(var p2=new Pen(Th.SelBorder))g.DrawRectangle(p2,row.X,row.Y,row.Width-1,row.Height-1);}}
                 else if(hov||dndHov){Th.FillHover(g,row);if(dndHov)using(var p2=new Pen(Th.SelBorder))g.DrawRectangle(p2,row.X,row.Y,row.Width-1,row.Height-1);}
                 // Resolve per-file-type icon; shell overrides when system_icons==1
@@ -2688,11 +2789,11 @@ namespace WinExplorer
         {
             _bgMenu=MI.MakeMenu();
             var vs=ViewSub();var ss=SortSub();var gs=GroupSub();var ga=GiveSub();var ns=NewSub();
-            _bgMenu.Items.AddRange(new ToolStripItem[]{vs,ss,gs,MI.Item("Refresh","reload",(s,e)=>LoadPath(CurrentPath)),MI.Sep(),MI.Item("Paste","paste",(s,e)=>PasteFromClipboard()),MI.Item("Paste shortcut","paste"),MI.Item("Undo Delete","undo"),MI.Sep(),ga,MI.Sep(),ns,MI.Sep(),MI.Item("Properties","properties")});
+            _bgMenu.Items.AddRange(new ToolStripItem[]{vs,ss,gs,MI.Item("Refresh","reload",(s,e)=>LoadPath(CurrentPath)),MI.Sep(),MI.Item("Paste","paste",(s,e)=>PasteFromClipboard()),MI.Item("Paste shortcut","paste"),MI.Item("Undo Delete","undo"),MI.Sep(),ga,MI.Sep(),ns,MI.Sep(),MI.Item("Properties","properties",(s2,e2)=>{if(_sel.Count>0)PropertiesDialog.Show(_items[_sel.First()].FullPath);})});
             _folderMenu=MI.MakeMenu();var fg=GiveSub();
-            _folderMenu.Items.AddRange(new ToolStripItem[]{MI.Item("Open","folder",(s,e)=>OpenSel()),MI.Item("Open in new window","folder"),MI.Item("Pin to Quick access","quick_access"),MI.Item("Take Ownership","properties"),ConvertSub(),MI.Sep(),fg,MI.Item("Restore","undo"),MI.Sep(),SendSub(),MI.Sep(),MI.Item("Cut","cut",(s,e)=>CutSelected()),MI.Item("Copy","copy",(s,e)=>CopySelected()),MI.Sep(),MI.Item("Create shortcut","shortcut",(s,e)=>{if(_sel.Count>0)CreateShortcut(_items[_sel.First()].FullPath);}),MI.Item("Delete","delete",(s,e)=>DeleteSelected()),MI.Item("Rename","rename",(s,e)=>StartRename()),MI.Sep(),MI.Item("Properties","properties")});
+            _folderMenu.Items.AddRange(new ToolStripItem[]{MI.Item("Open","folder",(s,e)=>OpenSel()),MI.Item("Open in new window","folder"),MI.Item("Pin to Quick access","quick_access"),MI.Item("Take Ownership","properties"),ConvertSub(),MI.Sep(),fg,MI.Item("Restore","undo"),MI.Sep(),SendSub(),MI.Sep(),MI.Item("Cut","cut",(s,e)=>CutSelected()),MI.Item("Copy","copy",(s,e)=>CopySelected()),MI.Sep(),MI.Item("Create shortcut","shortcut",(s,e)=>{if(_sel.Count>0)CreateShortcut(_items[_sel.First()].FullPath);}),MI.Item("Delete","delete",(s,e)=>DeleteSelected()),MI.Item("Rename","rename",(s,e)=>StartRename()),MI.Sep(),MI.Item("Properties","properties",(s2,e2)=>{if(_sel.Count>0)PropertiesDialog.Show(_items[_sel.First()].FullPath);})});
             _fileMenu=MI.MakeMenu();var fig=GiveSub();var fiow=OpenWithSub();
-            _fileMenu.Items.AddRange(new ToolStripItem[]{MI.Item("Open","file",(s,e)=>OpenSel()),MI.Item("Pin","quick_access"),MI.Item("Edit","rename"),MI.Item("Take Ownership","properties"),ConvertSub(),ArchiveExtractSub(),fiow,MI.Sep(),fig,MI.Item("Restore previous version","undo"),MI.Sep(),SendSub(),MI.Item("Cut","cut",(s,e)=>CutSelected()),MI.Item("Copy","copy",(s,e)=>CopySelected()),MI.Sep(),MI.Item("Create shortcut","shortcut",(s,e)=>{if(_sel.Count>0)CreateShortcut(_items[_sel.First()].FullPath);}),MI.Item("Delete","delete",(s,e)=>DeleteSelected()),MI.Item("Rename","rename",(s,e)=>StartRename()),MI.Sep(),MI.Item("Properties","properties")});
+            _fileMenu.Items.AddRange(new ToolStripItem[]{MI.Item("Open","file",(s,e)=>OpenSel()),MI.Item("Pin","quick_access"),MI.Item("Edit","rename"),MI.Item("Take Ownership","properties"),ConvertSub(),ArchiveExtractSub(),fiow,MI.Sep(),fig,MI.Item("Restore previous version","undo"),MI.Sep(),SendSub(),MI.Item("Cut","cut",(s,e)=>CutSelected()),MI.Item("Copy","copy",(s,e)=>CopySelected()),MI.Sep(),MI.Item("Create shortcut","shortcut",(s,e)=>{if(_sel.Count>0)CreateShortcut(_items[_sel.First()].FullPath);}),MI.Item("Delete","delete",(s,e)=>DeleteSelected()),MI.Item("Rename","rename",(s,e)=>StartRename()),MI.Sep(),MI.Item("Properties","properties",(s2,e2)=>{if(_sel.Count>0)PropertiesDialog.Show(_items[_sel.First()].FullPath);})});
         }
  
         ToolStripMenuItem ArchiveExtractSub()
@@ -2803,7 +2904,7 @@ namespace WinExplorer
             if(toExt!=".wav"){MessageBox.Show("MP3 encoding requires an external encoder (ffmpeg). Place ffmpeg.exe next to the application and try again.","Convert",MessageBoxButtons.OK,MessageBoxIcon.Information);return;}
             try
             {
-                // WAV is PCM – check source; if already WAV, just copy
+                // WAV is PCM ? check source; if already WAV, just copy
                 string outPath=Path.Combine(Path.GetDirectoryName(src2)??"",Path.GetFileNameWithoutExtension(src2)+toExt);
                 int ci=2; while(File.Exists(outPath))outPath=Path.Combine(Path.GetDirectoryName(src2)??"",Path.GetFileNameWithoutExtension(src2)+"_"+ci+++toExt);
                 // Try ffmpeg if available
@@ -2833,6 +2934,367 @@ namespace WinExplorer
         static ToolStripMenuItem OpenWithSub(){var s=MI.Sub("Open with","openwith");s.DropDownItems.Add(MI.Item("Choose another app...","openwith"));return s;}
     }
  
+ 
+    // =========================================================================
+    //  THIS PC PANE
+    //  Pixel-perfect "This PC" content pane.
+    //  Spec: 13 px top offset · 15 px left offset · 250×52 px buttons · 4 px gap
+    //        48×48 px icons · Windows 10 hover / select colours
+    // =========================================================================
+    class ThisPcPane : Panel
+    {
+        // -- Layout constants (per spec) ---------------------------------------
+        const int TOP_OFF  = 13;   // px from top  to first section header
+        const int LEFT_OFF = 15;   // px from left to first item
+        const int BTN_W    = 250;  // folder button width
+        const int BTN_H    = 52;   // folder button height
+        const int DRV_H    = 66;   // drive  button height (room for progress bar)
+        const int BTN_GAP  = 4;    // gap between buttons
+        const int ICO_SZ   = 48;   // icon render size  (per spec)
+        const int SEC_H    = 22;   // section header height
+        const int PROG_H   = 6;    // progress bar height
+        const int SEC_GAP  = 6;    // space below last item row in a section
+ 
+        // -- Colours ----------------------------------------------------------
+        static readonly Color Hov_Bg   = Color.FromArgb(0xE5,0xF3,0xFF);
+        static readonly Color Hov_Brd  = Color.FromArgb(0x99,0xD1,0xFF);
+        static readonly Color Sel_Bg   = Color.FromArgb(0xCC,0xE8,0xFF);
+        static readonly Color Prog_Trk = Color.FromArgb(0xE0,0xE0,0xE0);
+        static readonly Color Prog_Bl  = Color.FromArgb(0x26,0xA0,0xDA);
+        static readonly Color Prog_Rd  = Color.FromArgb(0xCA,0x17,0x00);
+        static readonly Color Sec_Txt  = Color.FromArgb(0x6C,0x6C,0x6C);
+        static readonly Color Sec_Ln   = Color.FromArgb(0xD5,0xD5,0xD5);
+        static readonly Color Chev_Clr = Color.FromArgb(0x59,0x59,0x59);
+ 
+        // -- Data model -------------------------------------------------------
+        class PcSection
+        {
+            public string Title;
+            public bool   Collapsed = false;
+            public readonly List<PcItem> Items = new List<PcItem>();
+        }
+        class PcItem
+        {
+            public string Name;
+            public string RealPath;
+            public bool   IsDrive;
+            public double FreePct  = 100.0;   // % FREE space
+            public string FreeStr, TotalStr;
+            public Image  Icon;
+            public Rectangle Rect;            // layout rect (no scroll offset)
+        }
+ 
+        readonly List<PcSection>              _sections = new List<PcSection>();
+        readonly List<(PcItem item,Rectangle rect)> _itemMap = new List<(PcItem,Rectangle)>();
+        readonly List<(PcSection sec,Rectangle rect)> _secMap  = new List<(PcSection,Rectangle)>();
+        int        _totalH, _scrollY;
+        PcItem     _hovItem, _selItem;
+        VScrollBar _vsb;
+ 
+        public event Action<string> FolderActivated;   // fires with RealPath on double-click
+ 
+        // -- Construction -----------------------------------------------------
+        public ThisPcPane()
+        {
+            BackColor = Color.White; DoubleBuffered = true;
+            SetStyle(ControlStyles.AllPaintingInWmPaint|ControlStyles.OptimizedDoubleBuffer, true);
+            _vsb = new VScrollBar{Dock=DockStyle.Right,Minimum=0,Visible=false};
+            _vsb.ValueChanged += (s,e)=>{ _scrollY=_vsb.Value; Invalidate(); };
+            Controls.Add(_vsb);
+            MouseMove        += OnMM;
+            MouseLeave       += (s,e)=>{ _hovItem=null; Invalidate(); };
+            MouseDown        += OnMDn;
+            MouseDoubleClick += OnMDC;
+            MouseWheel       += OnMW;
+            Resize           += (s,e)=>{ BuildLayout(); Invalidate(); };
+            LoadSections();
+            BuildLayout();
+        }
+ 
+        // -- Section / item data loading ---------------------------------------
+        void LoadSections()
+        {
+            // -- Library folders -----------------------------------------------
+            var folderSec = new PcSection();
+            var entries = new (string name, string path, string ico)[]
+            {
+                ("3D Objects", Path.Combine(SF(Environment.SpecialFolder.UserProfile),"3D Objects"), "category_3dobjects"),
+                ("Desktop",    SF(Environment.SpecialFolder.Desktop),                                 "category_desktop"),
+                ("Documents",  SF(Environment.SpecialFolder.MyDocuments),                             "category_documents"),
+                ("Downloads",  Path.Combine(SF(Environment.SpecialFolder.UserProfile),"Downloads"),   "category_downloads"),
+                ("Music",      SF(Environment.SpecialFolder.MyMusic),                                 "category_music"),
+                ("Pictures",   SF(Environment.SpecialFolder.MyPictures),                              "category_pictures"),
+                ("Videos",     SF(Environment.SpecialFolder.MyVideos),                                "category_videos"),
+            };
+            foreach (var (n,p,ico) in entries)
+            {
+                var it = new PcItem{ Name=n, RealPath=p, IsDrive=false };
+                it.Icon = LoadCat48(ico, p);
+                folderSec.Items.Add(it);
+            }
+            folderSec.Title = $"Folders ({folderSec.Items.Count})";
+            _sections.Add(folderSec);
+ 
+            // -- Drives -------------------------------------------------------
+            var hardSec   = new PcSection();
+            var removeSec = new PcSection();
+            foreach (var drv in DriveInfo.GetDrives())
+            {
+                try
+                {
+                    bool ready = drv.IsReady;
+                    string lbl = ready && !string.IsNullOrEmpty(drv.VolumeLabel) ? drv.VolumeLabel : "";
+                    string let = drv.Name.TrimEnd('\\','/');
+                    string nm  = string.IsNullOrEmpty(lbl) ? $"Local Disk ({let})" : $"{lbl} ({let})";
+                    var it = new PcItem{ Name=nm, RealPath=drv.Name, IsDrive=true };
+                    if (ready && drv.TotalSize > 0)
+                    {
+                        double tot = drv.TotalSize, fr = drv.TotalFreeSpace;
+                        it.FreePct  = fr/tot*100.0;
+                        it.FreeStr  = FmtB(fr);
+                        it.TotalStr = FmtB(tot);
+                    }
+                    it.Icon = LoadDrv48(drv.Name);
+                    switch(drv.DriveType)
+                    {
+                        case DriveType.Fixed:    hardSec.Items.Add(it);   break;
+                        case DriveType.Removable:
+                        case DriveType.CDRom:
+                        case DriveType.Network:  removeSec.Items.Add(it); break;
+                    }
+                }
+                catch{}
+            }
+            if (hardSec.Items.Count   > 0){ hardSec.Title   = $"Hard Disk Drives ({hardSec.Items.Count})";                         _sections.Add(hardSec);   }
+            if (removeSec.Items.Count > 0){ removeSec.Title = $"Devices with Removable Storage ({removeSec.Items.Count})"; _sections.Add(removeSec); }
+        }
+ 
+        static string SF(Environment.SpecialFolder f) => Environment.GetFolderPath(f);
+ 
+        static string FmtB(double b)
+        {
+            if (b>=1e12) return (b/1e12).ToString("F2")+" TB";
+            if (b>=1e9)  return (b/1e9).ToString("F2")+" GB";
+            if (b>=1e6)  return (b/1e6).ToString("F0")+" MB";
+            return (b/1e3).ToString("F0")+" KB";
+        }
+ 
+        // -- Icon loading -----------------------------------------------------
+        // Priority: (1) PNG in icons\Win10\  (2) Shell 32-px icon scaled  (3) embedded PNG scaled
+        static Image LoadCat48(string icoName, string realPath)
+        {
+            string dir = Path.GetDirectoryName(Application.ExecutablePath)??"";
+            foreach (var fn in new[]{icoName+".png",
+                                     icoName.Replace("category_","")+".png",
+                                     icoName.Replace("category_","")+"_48.png"})
+            {
+                string fp = Path.Combine(dir,"icons","Win10",fn);
+                if (File.Exists(fp)) try{ return Scale48(Image.FromFile(fp)); }catch{}
+            }
+            if (realPath!=null && Directory.Exists(realPath))
+            { var img=Shell.LargeIconForced(realPath); if(img!=null) return Scale48(img); }
+            string key = icoName.Replace("category_","");
+            var sm = Icons.Get(key); return sm!=null ? Scale48(sm) : null;
+        }
+        static Image LoadDrv48(string drvPath)
+        {
+            var img = Shell.LargeIconForced(drvPath);
+            if (img!=null) return Scale48(img);
+            var fb = Icons.Get("drives"); return fb!=null ? Scale48(fb) : null;
+        }
+        static Image Scale48(Image src)
+        {
+            if (src==null) return null;
+            if (src.Width==48&&src.Height==48) return src;
+            var dst = new Bitmap(48,48);
+            using(var g=Graphics.FromImage(dst))
+            {
+                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                g.SmoothingMode     = SmoothingMode.AntiAlias;
+                g.DrawImage(src,0,0,48,48);
+            }
+            return dst;
+        }
+ 
+        // -- Layout -----------------------------------------------------------
+        void BuildLayout()
+        {
+            _itemMap.Clear(); _secMap.Clear();
+            // Always reserve scrollbar width so layout is stable whether bar is shown or not
+            int avail = Width - SystemInformation.VerticalScrollBarWidth;
+            if (avail < BTN_W + LEFT_OFF + 4) avail = Width;
+            int y = TOP_OFF;
+ 
+            foreach (var sec in _sections)
+            {
+                _secMap.Add((sec, new Rectangle(0, y, avail, SEC_H)));
+                y += SEC_H + 1;
+ 
+                if (!sec.Collapsed && sec.Items.Count > 0)
+                {
+                    int x    = LEFT_OFF;
+                    int rowY = y;
+                    foreach (var it in sec.Items)
+                    {
+                        int h = it.IsDrive ? DRV_H : BTN_H;
+                        if (x + BTN_W > avail && x > LEFT_OFF)
+                        { x=LEFT_OFF; rowY += h + BTN_GAP; }
+                        it.Rect = new Rectangle(x, rowY, BTN_W, h);
+                        _itemMap.Add((it, it.Rect));
+                        x += BTN_W + BTN_GAP;
+                    }
+                    y = sec.Items[sec.Items.Count-1].Rect.Bottom + SEC_GAP;
+                }
+                y += 2;   // gap between sections
+            }
+            _totalH = y + 8;
+            UpdateScroll();
+        }
+ 
+        void UpdateScroll()
+        {
+            int vis = ClientSize.Height;
+            if (_totalH > vis)
+            {
+                _vsb.Visible = true; _vsb.Minimum = 0;
+                _vsb.Maximum = Math.Max(_totalH, vis+1);
+                _vsb.LargeChange = Math.Max(1, vis);
+                _vsb.SmallChange = BTN_H;
+                _scrollY = Math.Max(0, Math.Min(_scrollY, _vsb.Maximum-_vsb.LargeChange));
+                try{ _vsb.Value=_scrollY; }catch{}
+            }
+            else{ _vsb.Visible=false; _scrollY=0; }
+        }
+ 
+        // -- Paint ------------------------------------------------------------
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+            g.Clear(Color.White);
+            int avail = Width-(_vsb.Visible?_vsb.Width:0);
+ 
+            foreach (var (sec,r) in _secMap)  PaintSecHdr(g, sec, r, avail);
+            foreach (var (it,_) in _itemMap)
+            {
+                var dr = new Rectangle(it.Rect.X, it.Rect.Y-_scrollY, it.Rect.Width, it.Rect.Height);
+                if (dr.Bottom<0 || dr.Top>Height) continue;
+                if (it.IsDrive) PaintDrive(g,it,dr); else PaintFolder(g,it,dr);
+            }
+        }
+ 
+        void PaintSecHdr(Graphics g, PcSection sec, Rectangle r, int avail)
+        {
+            int dy = r.Y - _scrollY;
+            if (dy+r.Height<0 || dy>Height) return;
+            // ? / ?  chevron
+            int cx=13, cy=dy+r.Height/2;
+            using(var b=new SolidBrush(Chev_Clr))
+            {
+                if(sec.Collapsed) g.FillPolygon(b,new[]{new Point(cx-3,cy-4),new Point(cx+3,cy),new Point(cx-3,cy+4)});
+                else              g.FillPolygon(b,new[]{new Point(cx-4,cy-2),new Point(cx+4,cy-2),new Point(cx,cy+3)});
+            }
+            // Title + separator line
+            using(var tb=new SolidBrush(Sec_Txt))
+            using(var fmt=new StringFormat{LineAlignment=StringAlignment.Center,Trimming=StringTrimming.EllipsisCharacter})
+            {
+                var sz = g.MeasureString(sec.Title, Th.UiSmall);
+                g.DrawString(sec.Title, Th.UiSmall, tb, new RectangleF(22,dy,sz.Width+2,r.Height), fmt);
+                int lx=(int)(22+sz.Width+6), ly=dy+r.Height/2;
+                using(var p=new Pen(Sec_Ln)) g.DrawLine(p, lx, ly, avail-15, ly);
+            }
+        }
+ 
+        void PaintFolder(Graphics g, PcItem it, Rectangle r)
+        {
+            PaintBg(g,it,r);
+            // Icon – 48×48 px per spec, 4 px from left edge
+            int ix=r.X+4, iy=r.Y+(r.Height-ICO_SZ)/2;
+            if(it.Icon!=null) g.DrawImage(it.Icon, ix, iy, ICO_SZ, ICO_SZ);
+            // Label – right of icon, vertically centred
+            int tx=ix+ICO_SZ+8;
+            using(var b=new SolidBrush(Th.TxtColor))
+            using(var fmt=new StringFormat{LineAlignment=StringAlignment.Center,
+                                           Trimming=StringTrimming.EllipsisCharacter,
+                                           FormatFlags=StringFormatFlags.NoWrap})
+                g.DrawString(it.Name, Th.UiFont, b, new RectangleF(tx,r.Y,r.Right-tx-4,r.Height), fmt);
+        }
+ 
+        void PaintDrive(Graphics g, PcItem it, Rectangle r)
+        {
+            PaintBg(g,it,r);
+            // Icon
+            int ix=r.X+4, iy=r.Y+4;
+            if(it.Icon!=null) g.DrawImage(it.Icon, ix, iy, ICO_SZ, ICO_SZ);
+            // Text column
+            int tx=ix+ICO_SZ+8, tw=r.Right-tx-4;
+            using(var nb=new SolidBrush(Th.TxtColor))
+            using(var fmt=new StringFormat{Trimming=StringTrimming.EllipsisCharacter,FormatFlags=StringFormatFlags.NoWrap})
+                g.DrawString(it.Name, Th.UiFont, nb, new RectangleF(tx,r.Y+5,tw,17), fmt);
+            if(it.FreeStr!=null)
+                using(var sb2=new SolidBrush(Sec_Txt))
+                using(var fmt=new StringFormat{Trimming=StringTrimming.EllipsisCharacter,FormatFlags=StringFormatFlags.NoWrap})
+                    g.DrawString($"{it.FreeStr} free of {it.TotalStr}", Th.UiSmall, sb2, new RectangleF(tx,r.Y+21,tw,16), fmt);
+            // Progress bar
+            int py=r.Bottom-PROG_H-5, px2=r.X+4, pw=r.Width-8;
+            using(var trk=new SolidBrush(Prog_Trk)) g.FillRectangle(trk, px2, py, pw, PROG_H);
+            int fw=(int)(pw*(100.0-it.FreePct)/100.0);
+            if(fw>0)
+                using(var fb=new SolidBrush(it.FreePct<10.0?Prog_Rd:Prog_Bl))
+                    g.FillRectangle(fb, px2, py, Math.Min(fw,pw), PROG_H);
+        }
+ 
+        void PaintBg(Graphics g, PcItem it, Rectangle r)
+        {
+            bool sel=it==_selItem, hov=it==_hovItem;
+            if(sel){ using(var b=new SolidBrush(Sel_Bg))   g.FillRectangle(b,r); using(var p=new Pen(Hov_Brd)) g.DrawRectangle(p,r.X,r.Y,r.Width-1,r.Height-1); }
+            else if(hov){ using(var b=new SolidBrush(Hov_Bg)) g.FillRectangle(b,r); using(var p=new Pen(Hov_Brd)) g.DrawRectangle(p,r.X,r.Y,r.Width-1,r.Height-1); }
+        }
+ 
+        // -- Hit testing -------------------------------------------------------
+        PcItem ItemAt(Point pt)
+        {
+            int cy=pt.Y+_scrollY;
+            foreach(var (it,r) in _itemMap)
+                if(r.Left<=pt.X&&pt.X<=r.Right&&r.Top<=cy&&cy<=r.Bottom) return it;
+            return null;
+        }
+        PcSection SecAt(Point pt)
+        {
+            int cy=pt.Y+_scrollY;
+            foreach(var (sec,r) in _secMap)
+                if(r.Top<=cy&&cy<=r.Bottom) return sec;
+            return null;
+        }
+ 
+        // -- Mouse handlers ----------------------------------------------------
+        void OnMM(object s, MouseEventArgs e)
+        { var it=ItemAt(e.Location); if(it!=_hovItem){_hovItem=it;Invalidate();} }
+ 
+        void OnMDn(object s, MouseEventArgs e)
+        {
+            if(e.Button!=MouseButtons.Left) return;
+            var sec=SecAt(e.Location);
+            if(sec!=null){ sec.Collapsed=!sec.Collapsed; BuildLayout(); Invalidate(); return; }
+            var it=ItemAt(e.Location);
+            if(it!=null){ _selItem=it; Invalidate(); }
+        }
+ 
+        void OnMDC(object s, MouseEventArgs e)
+        {
+            if(e.Button!=MouseButtons.Left) return;
+            var it=ItemAt(e.Location);
+            if(it?.RealPath!=null) FolderActivated?.Invoke(it.RealPath);
+        }
+ 
+        void OnMW(object s, MouseEventArgs e)
+        {
+            _scrollY=Math.Max(0,_scrollY-e.Delta/3);
+            if(_vsb.Visible){ _scrollY=Math.Min(_scrollY,Math.Max(0,_vsb.Maximum-_vsb.LargeChange)); try{_vsb.Value=_scrollY;}catch{} }
+            Invalidate();
+        }
+    }
+ 
     // -------------------------------------------------------------------------
     //  Splitter bar
     // -------------------------------------------------------------------------
@@ -2859,7 +3321,7 @@ namespace WinExplorer
     // -------------------------------------------------------------------------
     class ExplorerForm:Form
     {
-        TopNavBar _nav; CommandBar _cmd; TreePane _tree; ContentPane _content;
+        TopNavBar _nav; CommandBar _cmd; TreePane _tree; ContentPane _content; ThisPcPane _thisPc;
         SplitterBar _split; PreviewPane _preview; StatusBar _status; Panel _main;
         List<string> _hist=new List<string>(); int _hi=-1;
  
@@ -2872,7 +3334,7 @@ namespace WinExplorer
             string icoPath=Path.Combine(Path.GetDirectoryName(Application.ExecutablePath)??"","Icon1.ico");
             if(File.Exists(icoPath))try{Icon=new Icon(icoPath);}catch{}
             Build();Wire();
-            Navigate(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+            Navigate("::ThisPC::");
         }
         void Build()
         {
@@ -2882,8 +3344,10 @@ namespace WinExplorer
             _tree=new TreePane{Dock=DockStyle.Left,Width=220};
             _split=new SplitterBar(_tree){Dock=DockStyle.Left};
             _content=new ContentPane{Dock=DockStyle.Fill};
+            _thisPc=new ThisPcPane{Dock=DockStyle.Fill};
             _preview=new PreviewPane{Visible=false};
             _main.Controls.Add(_content);
+            _main.Controls.Add(_thisPc);  // starts on top – default view is This PC
             var _pvSep=new Panel{Dock=DockStyle.Right,Width=1,BackColor=Color.FromArgb(247,247,247)};
             _main.Controls.Add(_pvSep);
             _main.Controls.Add(_preview);
@@ -2907,6 +3371,7 @@ namespace WinExplorer
             _cmd.OrgProps+=(s,e)=>ShowProps(); _cmd.OrgClose+=(s,e)=>Close();
             _tree.NodeSelected+=n=>{if(n.Path!=null&&Directory.Exists(n.Path))Navigate(n.Path);else SetStatus(n.Label);};
             _tree.DropFiles+=(srcs,dest)=>PerformDrop(srcs.Split('\n'),dest);
+            _thisPc.FolderActivated+=p2=>Navigate(p2);
             _content.ItemActivated+=it=>{if(it.IsDirectory)Navigate(it.FullPath);else try{Process.Start(new ProcessStartInfo(it.FullPath){UseShellExecute=true});}catch{}};
             _content.SelectionChanged+=it=>{if(_preview.Visible)_preview.ShowItem(it);};
             // Form-level DnD (drag from desktop etc.)
@@ -2916,15 +3381,28 @@ namespace WinExplorer
  
         void Navigate(string path)
         {
+            if(path.Equals("This PC",StringComparison.OrdinalIgnoreCase))path="::ThisPC::";
             if(_hi<_hist.Count-1)_hist.RemoveRange(_hi+1,_hist.Count-_hi-1);
             _hist.Add(path);_hi=_hist.Count-1;Apply(path);
         }
         void Apply(string path)
         {
             _nav.CurrentPath=path;_nav.BackEnabled=_hi>0;_nav.ForwardEnabled=_hi<_hist.Count-1;
-            if(path.Contains("|")){{string _ap=path.Substring(0,path.IndexOf("|")),_as=path.Substring(path.IndexOf("|")+1);if(File.Exists(_ap)){_content.LoadArchive(_ap,_as);Text=$"{Path.GetFileName(_ap)??_ap} ? File Explorer";}}}
-            else if(Directory.Exists(path)){_content.LoadPath(path);_tree.SelectPath(path);Text=$"{Path.GetFileName(path)??path} ? File Explorer";}
-            else Text=$"{path} ? File Explorer";
+            // -- This PC view --------------------------------------------------
+            if(path=="::ThisPC::")
+            {
+                _nav.CurrentPath="This PC";
+                _thisPc.BringToFront();
+                if(_preview.Visible)_preview.Clear();
+                Text="This PC — File Explorer";
+                _status.Text="";
+                return;
+            }
+            // -- Normal file-system navigation ---------------------------------
+            _content.BringToFront();
+            if(path.Contains("|")){{string _ap=path.Substring(0,path.IndexOf("|")),_as=path.Substring(path.IndexOf("|")+1);if(File.Exists(_ap)){_content.LoadArchive(_ap,_as);Text=$"{Path.GetFileName(_ap)??_ap} — File Explorer";}}}
+            else if(Directory.Exists(path)){_content.LoadPath(path);_tree.SelectPath(path);Text=$"{Path.GetFileName(path)??path} — File Explorer";}
+            else Text=$"{path} — File Explorer";
             if(_preview.Visible)_preview.ShowItem(_content.FirstSelected);
             SetStatus(null);
         }
@@ -2932,13 +3410,14 @@ namespace WinExplorer
         void GoFwd(){if(_hi<_hist.Count-1){_hi++;Apply(_hist[_hi]);}}
         void GoUp()
         {
+            if(_nav.CurrentPath=="This PC")return;
             if(_content.InArchive)
             {
                 string sub=_content.ArchiveSub;
                 int sl=sub.LastIndexOf('/');
                 if(sl>0)_content.LoadArchive(_content.ArchivePath,sub.Substring(0,sl));
                 else _content.LoadArchive(_content.ArchivePath,"");
-                // Exited archive root – go to parent folder
+                // Exited archive root ? go to parent folder
                 if(_content.ArchiveSub.Length==0&&sl<0)Navigate(Path.GetDirectoryName(_content.ArchivePath)??"");
                 return;
             }
@@ -2951,7 +3430,13 @@ namespace WinExplorer
             string p=Path.Combine(cur,"New folder"); int i=2; while(Directory.Exists(p))p=Path.Combine(cur,$"New folder ({i++})");
             try{Directory.CreateDirectory(p);_content.LoadPathAndRename(cur,Path.GetFileName(p));SetStatus($"Created: {Path.GetFileName(p)}");}catch(Exception ex){MessageBox.Show(ex.Message,"Error",MessageBoxButtons.OK,MessageBoxIcon.Error);}
         }
-        void ShowProps(){string p=_content.CurrentPath;if(Directory.Exists(p))MessageBox.Show($"Path: {p}","Properties",MessageBoxButtons.OK,MessageBoxIcon.Information);}
+        void ShowProps()
+        {
+            // Show properties for selected item(s), or current folder if nothing selected
+            string p = _content.FirstSelected?.FullPath ?? _content.CurrentPath;
+            if(p!=null && (System.IO.File.Exists(p)||System.IO.Directory.Exists(p)))
+                PropertiesDialog.Show(p);
+        }
         void PerformDrop(string[] srcs,string dest)
         {
             foreach(var src in srcs)
@@ -2980,5 +3465,264 @@ namespace WinExplorer
             else if(e.KeyCode==Keys.F2)_content.StartRename();
         }
     }
+
+    // =========================================================================
+    //  PROPERTIES DIALOG  (General tab + Advanced Attributes)
+    // =========================================================================
+    static class PropertiesDialog
+    {
+        public static void Show(string path)
+        {
+            bool isDir = Directory.Exists(path);
+            using(var dlg = new PropertiesForm(path, isDir))
+                dlg.ShowDialog();
+        }
+    }
+
+    class PropertiesForm : Form
+    {
+        readonly string _path;
+        readonly bool   _isDir;
+        // Controls
+        TabControl _tabs;
+        TextBox    _nameBox;
+        Label      _typeVal, _locVal, _sizeVal, _sizeOnDiskVal, _containsVal, _createdVal;
+        CheckBox   _cbReadOnly, _cbHidden;
+        Button     _btnAdvanced, _btnOK, _btnCancel, _btnApply;
+        PictureBox _icon;
+        FileSystemInfo _fsi;
+        FileAttributes _origAttribs;
+
+        public PropertiesForm(string path, bool isDir)
+        {
+            _path  = path;
+            _isDir = isDir;
+            _fsi   = isDir ? (FileSystemInfo)new DirectoryInfo(path) : new FileInfo(path);
+            _origAttribs = _fsi.Attributes;
+            BuildUI();
+            LoadData();
+        }
+
+        void BuildUI()
+        {
+            Text            = System.IO.Path.GetFileName(_path) + " Properties";
+            Size            = new Size(390, 430);
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox     = false;
+            MinimizeBox     = false;
+            StartPosition   = FormStartPosition.CenterParent;
+            Font            = Th.UiFont;
+            BackColor       = SystemColors.Control;
+
+            // Icon + Name row
+            _icon = new PictureBox { Size=new Size(36,36), Location=new Point(12,12), SizeMode=PictureBoxSizeMode.StretchImage };
+            var ico = Shell.LargeIconForced(_path) ?? Icons.Get(_isDir?"folder":"file");
+            if(ico!=null) _icon.Image = ico;
+            Controls.Add(_icon);
+
+            _nameBox = new TextBox { Location=new Point(58,20), Width=300, Font=Th.UiFont, Text=System.IO.Path.GetFileName(_path) };
+            Controls.Add(_nameBox);
+
+            // Separator
+            var sep0 = new Panel { Location=new Point(0,62), Size=new Size(390,1), BackColor=Color.FromArgb(210,210,210) };
+            Controls.Add(sep0);
+
+            // Tab control
+            _tabs = new TabControl { Location=new Point(0,62), Size=new Size(390,300), Font=Th.UiFont };
+            var tabGen = new TabPage("General");
+            BuildGeneralTab(tabGen);
+            _tabs.TabPages.Add(tabGen);
+            Controls.Add(_tabs);
+
+            // Bottom buttons
+            _btnOK     = new Button { Text="OK",     Size=new Size(75,23), DialogResult=DialogResult.OK     };
+            _btnCancel = new Button { Text="Cancel",  Size=new Size(75,23), DialogResult=DialogResult.Cancel };
+            _btnApply  = new Button { Text="Apply",   Size=new Size(75,23) };
+            _btnOK    .Location = new Point( Width-3*75-2*6-12, Height-23-12 );
+            _btnCancel.Location = new Point( Width-2*75-1*6-12, Height-23-12 );
+            _btnApply .Location = new Point( Width-1*75      -12, Height-23-12 );
+            _btnOK    .Click += (s,e)=>{ ApplyAttributes(); Close(); };
+            _btnApply .Click += (s,e)=>  ApplyAttributes();
+            Controls.Add(_btnOK); Controls.Add(_btnCancel); Controls.Add(_btnApply);
+            AcceptButton = _btnOK; CancelButton = _btnCancel;
+        }
+
+        void BuildGeneralTab(TabPage p)
+        {
+            p.BackColor = SystemColors.Control;
+            p.Padding   = new Padding(0);
+            int lx=8, rx=140, y=10, rowH=20, gap=6;
+
+            Label L(string t){ var lb=new Label{Text=t,AutoSize=false,Width=125,Height=rowH,Location=new Point(lx,y),TextAlign=ContentAlignment.MiddleRight,ForeColor=Color.FromArgb(36,39,40)};p.Controls.Add(lb);return lb;}
+            Label R(string t="") { var lb=new Label{Text=t,AutoSize=false,Width=200,Height=rowH,Location=new Point(rx,y),TextAlign=ContentAlignment.MiddleLeft,ForeColor=Color.FromArgb(0,0,205)};p.Controls.Add(lb);return lb;}
+            Label R2(string t=""){ var lb=new Label{Text=t,AutoSize=false,Width=200,Height=rowH,Location=new Point(rx,y),TextAlign=ContentAlignment.MiddleLeft,ForeColor=Color.FromArgb(36,39,40)};p.Controls.Add(lb);return lb;}
+
+            L("Type:"); _typeVal=R2(); y+=rowH+gap;
+            L("Location:"); _locVal=R2(); y+=rowH+gap;
+
+            // Thin separator
+            var s1=new Panel{Location=new Point(8,y),Size=new Size(340,1),BackColor=Color.FromArgb(210,210,210)};p.Controls.Add(s1); y+=gap+1;
+
+            L("Size:"); _sizeVal=R(); y+=rowH+gap;
+            L("Size on disk:"); _sizeOnDiskVal=R(); y+=rowH+gap;
+            if(_isDir){ L("Contains:"); _containsVal=R2(); y+=rowH+gap; }
+
+            var s2=new Panel{Location=new Point(8,y),Size=new Size(340,1),BackColor=Color.FromArgb(210,210,210)};p.Controls.Add(s2); y+=gap+1;
+
+            L("Created:"); _createdVal=R2(); y+=rowH+gap;
+
+            var s3=new Panel{Location=new Point(8,y),Size=new Size(340,1),BackColor=Color.FromArgb(210,210,210)};p.Controls.Add(s3); y+=gap+1;
+
+            // Attributes
+            var attribLbl=new Label{Text="Attributes:",AutoSize=false,Width=125,Height=rowH,Location=new Point(lx,y),TextAlign=ContentAlignment.MiddleRight,ForeColor=Color.FromArgb(36,39,40)};p.Controls.Add(attribLbl);
+            _cbReadOnly=new CheckBox{Text="Read-only"+((_isDir)?" (Only applies to files in folder)":""),Location=new Point(rx,y),Width=220,Height=rowH,Font=Th.UiFont};
+            p.Controls.Add(_cbReadOnly); y+=rowH+2;
+
+            _cbHidden=new CheckBox{Text="Hidden",Location=new Point(rx,y),Width=100,Height=rowH,Font=Th.UiFont};
+            p.Controls.Add(_cbHidden);
+
+            _btnAdvanced=new Button{Text="Advanced...",Location=new Point(270,y-2),Width=75,Height=22,Font=Th.UiFont};
+            _btnAdvanced.Click+=(s,e)=>{using(var adv=new AdvancedAttributesForm(_path,_isDir))adv.ShowDialog(this);};
+            p.Controls.Add(_btnAdvanced);
+        }
+
+        void LoadData()
+        {
+            string name = System.IO.Path.GetFileName(_path);
+            _nameBox.Text = name;
+            _typeVal .Text = _isDir ? "File folder" : (Shell.TypeName(_path));
+            _locVal  .Text = System.IO.Path.GetDirectoryName(_path) ?? _path;
+            _createdVal.Text = _fsi.CreationTime.ToString("dddd, MMMM d, yyyy, h:mm:ss tt");
+            _cbReadOnly.Checked = (_fsi.Attributes & FileAttributes.ReadOnly) != 0;
+            _cbHidden  .Checked = (_fsi.Attributes & FileAttributes.Hidden)   != 0;
+
+            if(_isDir)
+            {
+                // Compute size async
+                _sizeVal.Text = "Calculating...";
+                _sizeOnDiskVal.Text = "Calculating...";
+                _containsVal.Text   = "Calculating...";
+                System.Threading.ThreadPool.QueueUserWorkItem(_=>
+                {
+                    long bytes=0,onDisk=0; int files=0,dirs=0;
+                    try{ CalcDir(_path,ref bytes,ref onDisk,ref files,ref dirs); }catch{}
+                    string szStr  = FormatBytes(bytes)+" ("+bytes.ToString("N0")+" bytes)";
+                    string dskStr = FormatBytes(onDisk)+" ("+onDisk.ToString("N0")+" bytes)";
+                    string cntStr = files.ToString("N0")+" Files, "+dirs.ToString("N0")+" Folders";
+                    try{ Invoke((Action)(()=>{ if(IsDisposed)return; _sizeVal.Text=szStr; _sizeOnDiskVal.Text=dskStr; _containsVal.Text=cntStr; })); }catch{}
+                });
+            }
+            else
+            {
+                var fi=(FileInfo)_fsi;
+                _sizeVal      .Text = FormatBytes(fi.Length)+" ("+fi.Length.ToString("N0")+" bytes)";
+                long clus = ((fi.Length+4095)/4096)*4096;
+                _sizeOnDiskVal.Text = FormatBytes(clus)+" ("+clus.ToString("N0")+" bytes)";
+            }
+        }
+
+        void ApplyAttributes()
+        {
+            try
+            {
+                var a = _fsi.Attributes;
+                if(_cbReadOnly.Checked) a|=FileAttributes.ReadOnly; else a&=~FileAttributes.ReadOnly;
+                if(_cbHidden  .Checked) a|=FileAttributes.Hidden;   else a&=~FileAttributes.Hidden;
+                _fsi.Attributes = a;
+            }
+            catch(Exception ex){ MessageBox.Show(ex.Message,"Error",MessageBoxButtons.OK,MessageBoxIcon.Error); }
+        }
+
+        static void CalcDir(string d,ref long bytes,ref long onDisk,ref int files,ref int dirs)
+        {
+            try
+            {
+                foreach(var f in Directory.GetFiles(d))
+                    try{ var fi=new FileInfo(f); bytes+=fi.Length; onDisk+=((fi.Length+4095)/4096)*4096; files++; }catch{}
+                foreach(var sub in Directory.GetDirectories(d))
+                    try{ dirs++; CalcDir(sub,ref bytes,ref onDisk,ref files,ref dirs); }catch{}
+            }catch{}
+        }
+        static string FormatBytes(long b)
+        {
+            if(b>=1L<<40) return ((double)b/(1L<<40)).ToString("F1")+" TB";
+            if(b>=1L<<30) return ((double)b/(1L<<30)).ToString("F1")+" GB";
+            if(b>=1L<<20) return ((double)b/(1L<<20)).ToString("F1")+" MB";
+            if(b>=1L<<10) return ((double)b/(1L<<10)).ToString("F1")+" KB";
+            return b+" bytes";
+        }
+    }
+
+    class AdvancedAttributesForm : Form
+    {
+        CheckBox _cbArchive, _cbIndex, _cbCompress, _cbEncrypt;
+        Button   _btnOK, _btnCancel;
+        readonly string _path;
+        readonly bool   _isDir;
+
+        public AdvancedAttributesForm(string path, bool isDir)
+        {
+            _path=path; _isDir=isDir;
+            BuildUI();
+            LoadData();
+        }
+        void BuildUI()
+        {
+            Text            = "Advanced Attributes";
+            Size            = new Size(390,270);
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox     = false; MinimizeBox=false;
+            StartPosition   = FormStartPosition.CenterParent;
+            Font            = Th.UiFont;
+            BackColor       = SystemColors.Control;
+
+            // Icon + description
+            var pb=new PictureBox{Size=new Size(32,32),Location=new Point(12,12),SizeMode=PictureBoxSizeMode.StretchImage};
+            var ico=Icons.Get("properties"); if(ico!=null)pb.Image=ico; Controls.Add(pb);
+            var desc=new Label{Text="Choose the settings you want for this folder.",Location=new Point(54,12),Width=310,Height=58,Font=Th.UiFont};
+            Controls.Add(desc);
+            var s0=new Panel{Location=new Point(0,74),Size=new Size(390,1),BackColor=Color.FromArgb(200,200,200)};Controls.Add(s0);
+
+            // Archive & Index group
+            var gbA=new Label{Text="Archive and Index attributes",Location=new Point(12,82),Width=350,Height=16,Font=new Font("Segoe UI",9f,FontStyle.Regular),ForeColor=Color.FromArgb(60,60,60)};Controls.Add(gbA);
+            _cbArchive=new CheckBox{Text="Folder is ready for archiving",Location=new Point(20,104),Width=320,Height=18,Font=Th.UiFont};Controls.Add(_cbArchive);
+            _cbIndex  =new CheckBox{Text="Allow files in this folder to have contents indexed in addition to file properties",Location=new Point(20,126),Width=340,Height=30,Font=Th.UiFont};Controls.Add(_cbIndex);
+            var s1=new Panel{Location=new Point(0,162),Size=new Size(390,1),BackColor=Color.FromArgb(200,200,200)};Controls.Add(s1);
+
+            // Compress & Encrypt group
+            var gbC=new Label{Text="Compress or Encrypt attributes",Location=new Point(12,170),Width=350,Height=16,Font=new Font("Segoe UI",9f,FontStyle.Regular),ForeColor=Color.FromArgb(60,60,60)};Controls.Add(gbC);
+            _cbCompress=new CheckBox{Text="Compress contents to save disk space",Location=new Point(20,192),Width=320,Height=18,Font=Th.UiFont};Controls.Add(_cbCompress);
+            _cbEncrypt =new CheckBox{Text="Encrypt contents to secure data",Location=new Point(20,214),Width=320,Height=18,Font=Th.UiFont};Controls.Add(_cbEncrypt);
+
+            _btnOK    =new Button{Text="OK",    Size=new Size(75,23),Location=new Point(Width-2*75-12,Height-23-12),DialogResult=DialogResult.OK};
+            _btnCancel=new Button{Text="Cancel",Size=new Size(75,23),Location=new Point(Width-75-6,Height-23-12),DialogResult=DialogResult.Cancel};
+            _btnOK.Click+=(s,e)=>ApplyData();
+            Controls.Add(_btnOK); Controls.Add(_btnCancel);
+            AcceptButton=_btnOK; CancelButton=_btnCancel;
+        }
+        void LoadData()
+        {
+            try{
+                var a=new FileSystemInfo[]{}.GetType(); // dummy
+                var fi=_isDir?(FileSystemInfo)new DirectoryInfo(_path):new FileInfo(_path);
+                _cbArchive .Checked=(fi.Attributes&FileAttributes.Archive)  !=0;
+                _cbIndex   .Checked=(fi.Attributes&FileAttributes.NotContentIndexed)==0; // inverted
+                _cbCompress.Checked=(fi.Attributes&FileAttributes.Compressed)!=0;
+                _cbEncrypt .Checked=(fi.Attributes&FileAttributes.Encrypted)!=0;
+            }catch{}
+        }
+        void ApplyData()
+        {
+            try{
+                var fi=_isDir?(FileSystemInfo)new DirectoryInfo(_path):new FileInfo(_path);
+                var a=fi.Attributes;
+                if(_cbArchive.Checked)a|=FileAttributes.Archive;else a&=~FileAttributes.Archive;
+                if(!_cbIndex.Checked)a|=FileAttributes.NotContentIndexed;else a&=~FileAttributes.NotContentIndexed;
+                // Compress and Encrypt can't both be set; OS handles conflict
+                if(_cbCompress.Checked)a|=FileAttributes.Compressed; else a&=~FileAttributes.Compressed;
+                if(_cbEncrypt .Checked)a|=FileAttributes.Encrypted;  else a&=~FileAttributes.Encrypted;
+                fi.Attributes=a;
+            }catch(Exception ex){MessageBox.Show(ex.Message,"Error",MessageBoxButtons.OK,MessageBoxIcon.Error);}
+        }
+    }
 }
- 
