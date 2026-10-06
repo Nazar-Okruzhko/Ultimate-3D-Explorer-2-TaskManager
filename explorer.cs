@@ -682,7 +682,7 @@ namespace WinExplorer
     // -------------------------------------------------------------------------
     class TreePane:Panel
     {
-        const int ROW_H=22,ROOT_X=13,LVL=16,ICO=16,ARW=12;
+        const int ROW_H=21,ROOT_X=13,LVL=16,ICO=16,ARW=12;
         List<TreeNode2> _flat=new List<TreeNode2>(); TreeNode2 _root,_sel,_dropTarget; int _hov=-1;
         int _scrollY,_totalH; VScrollBar _vsb;
         public event Action<TreeNode2> NodeSelected;
@@ -833,8 +833,7 @@ namespace WinExplorer
         {
             int idx=IdxAtDocY(_scrollY+e.Y); if(idx<0&&e.Y>0)idx=-1;
             if(idx!=_hov){_hov=idx;Invalidate();}
-            // Hand cursor only when pointer is at or past 120px (past the indent/expand zone)
-            Cursor = e.X >= 120 ? Cursors.Hand : Cursors.Default;
+            Cursor = e.X < 250 ? Cursors.Hand : Cursors.Default;
         }
         void OnMD(object s,MouseEventArgs e)
         {
@@ -843,7 +842,6 @@ namespace WinExplorer
             bool hasK=n.Children.Count>0||n.HasChildren;
             if(e.Button==MouseButtons.Left&&hasK&&e.X>=indent-4&&e.X<=indent+ARW+2){Toggle(n);return;}
             _sel=n; Invalidate();
-            // Fire on both left and right click so right-click also selects + navigates
             NodeSelected?.Invoke(n);
             if(e.Button==MouseButtons.Right) ShowTreeCtxMenu(n, e.Location);
         }
@@ -2172,7 +2170,7 @@ namespace WinExplorer
  
     class ContentPane:Panel
     {
-        const int HDR_H=25,ROW_H=22,ICO=16,DIV=4,ITEM_INDENT=15,HDR_INDENT=1;
+        const int HDR_H=25,ROW_H=21,ICO=16,DIV=4,ITEM_INDENT=15,HDR_INDENT=1;
  
         int _wN=272,_wD=120,_wT=120,_wS=80;
         List<ContentItem> _items=new List<ContentItem>();
@@ -2704,7 +2702,7 @@ namespace WinExplorer
             LoadPath(CurrentPath,keepScroll:true);
         }
  
-        int RowAt(int y)=>y<HDR_H?-1:(_scrollY+y-HDR_H)/ROW_H;
+        int RowAt(int y){ if(y<HDR_H)return -1; int i=(_scrollY+y-HDR_H)/ROW_H; return (i>=0&&i<_items.Count)?i:-1; }
         void UpdateScroll(){int tot=_items.Count*ROW_H,vis=Math.Max(1,ClientSize.Height-HDR_H);_vsb.Visible=tot>vis;if(_vsb.Visible){_vsb.Maximum=Math.Max(0,tot-vis+100);_vsb.SmallChange=ROW_H;_vsb.LargeChange=100;}else _scrollY=0;}
         void SortItems()
         {
@@ -2789,11 +2787,11 @@ namespace WinExplorer
         {
             _bgMenu=MI.MakeMenu();
             var vs=ViewSub();var ss=SortSub();var gs=GroupSub();var ga=GiveSub();var ns=NewSub();
-            _bgMenu.Items.AddRange(new ToolStripItem[]{vs,ss,gs,MI.Item("Refresh","reload",(s,e)=>LoadPath(CurrentPath)),MI.Sep(),MI.Item("Paste","paste",(s,e)=>PasteFromClipboard()),MI.Item("Paste shortcut","paste"),MI.Item("Undo Delete","undo"),MI.Sep(),ga,MI.Sep(),ns,MI.Sep(),MI.Item("Properties","properties",(s2,e2)=>{if(_sel.Count>0)PropertiesDialog.Show(_items[_sel.First()].FullPath);})});
+            _bgMenu.Items.AddRange(new ToolStripItem[]{vs,ss,gs,MI.Item("Refresh","reload",(s,e)=>LoadPath(CurrentPath)),MI.Sep(),MI.Item("Paste","paste",(s,e)=>PasteFromClipboard()),MI.Item("Paste shortcut","paste"),MI.Item("Undo Delete","undo"),MI.Sep(),ga,MI.Sep(),ns,MI.Sep(),MI.Item("Properties","properties",(s2,e2)=>{string _p=_sel.Count>0?_items[_sel.First()].FullPath:CurrentPath;PropertiesDialog.Show(_p);})});
             _folderMenu=MI.MakeMenu();var fg=GiveSub();
-            _folderMenu.Items.AddRange(new ToolStripItem[]{MI.Item("Open","folder",(s,e)=>OpenSel()),MI.Item("Open in new window","folder"),MI.Item("Pin to Quick access","quick_access"),MI.Item("Take Ownership","properties"),ConvertSub(),MI.Sep(),fg,MI.Item("Restore","undo"),MI.Sep(),SendSub(),MI.Sep(),MI.Item("Cut","cut",(s,e)=>CutSelected()),MI.Item("Copy","copy",(s,e)=>CopySelected()),MI.Sep(),MI.Item("Create shortcut","shortcut",(s,e)=>{if(_sel.Count>0)CreateShortcut(_items[_sel.First()].FullPath);}),MI.Item("Delete","delete",(s,e)=>DeleteSelected()),MI.Item("Rename","rename",(s,e)=>StartRename()),MI.Sep(),MI.Item("Properties","properties",(s2,e2)=>{if(_sel.Count>0)PropertiesDialog.Show(_items[_sel.First()].FullPath);})});
+            _folderMenu.Items.AddRange(new ToolStripItem[]{MI.Item("Open","folder",(s,e)=>OpenSel()),MI.Item("Open in new window","folder"),MI.Item("Pin to Quick access","quick_access"),MI.Item("Take Ownership","properties"),ConvertSub(),MI.Sep(),fg,MI.Item("Restore","undo"),MI.Sep(),SendSub(),MI.Sep(),MI.Item("Cut","cut",(s,e)=>CutSelected()),MI.Item("Copy","copy",(s,e)=>CopySelected()),MI.Sep(),MI.Item("Create shortcut","shortcut",(s,e)=>{if(_sel.Count>0)CreateShortcut(_items[_sel.First()].FullPath);}),MI.Item("Delete","delete",(s,e)=>DeleteSelected()),MI.Item("Rename","rename",(s,e)=>StartRename()),MI.Sep(),MI.Item("Properties","properties",(s2,e2)=>{string _p=_sel.Count>0?_items[_sel.First()].FullPath:CurrentPath;PropertiesDialog.Show(_p);})});
             _fileMenu=MI.MakeMenu();var fig=GiveSub();var fiow=OpenWithSub();
-            _fileMenu.Items.AddRange(new ToolStripItem[]{MI.Item("Open","file",(s,e)=>OpenSel()),MI.Item("Pin","quick_access"),MI.Item("Edit","rename"),MI.Item("Take Ownership","properties"),ConvertSub(),ArchiveExtractSub(),fiow,MI.Sep(),fig,MI.Item("Restore previous version","undo"),MI.Sep(),SendSub(),MI.Item("Cut","cut",(s,e)=>CutSelected()),MI.Item("Copy","copy",(s,e)=>CopySelected()),MI.Sep(),MI.Item("Create shortcut","shortcut",(s,e)=>{if(_sel.Count>0)CreateShortcut(_items[_sel.First()].FullPath);}),MI.Item("Delete","delete",(s,e)=>DeleteSelected()),MI.Item("Rename","rename",(s,e)=>StartRename()),MI.Sep(),MI.Item("Properties","properties",(s2,e2)=>{if(_sel.Count>0)PropertiesDialog.Show(_items[_sel.First()].FullPath);})});
+            _fileMenu.Items.AddRange(new ToolStripItem[]{MI.Item("Open","file",(s,e)=>OpenSel()),MI.Item("Pin","quick_access"),MI.Item("Edit","rename"),MI.Item("Take Ownership","properties"),ConvertSub(),ArchiveExtractSub(),fiow,MI.Sep(),fig,MI.Item("Restore previous version","undo"),MI.Sep(),SendSub(),MI.Item("Cut","cut",(s,e)=>CutSelected()),MI.Item("Copy","copy",(s,e)=>CopySelected()),MI.Sep(),MI.Item("Create shortcut","shortcut",(s,e)=>{if(_sel.Count>0)CreateShortcut(_items[_sel.First()].FullPath);}),MI.Item("Delete","delete",(s,e)=>DeleteSelected()),MI.Item("Rename","rename",(s,e)=>StartRename()),MI.Sep(),MI.Item("Properties","properties",(s2,e2)=>{string _p=_sel.Count>0?_items[_sel.First()].FullPath:CurrentPath;PropertiesDialog.Show(_p);})});
         }
  
         ToolStripMenuItem ArchiveExtractSub()
@@ -2948,11 +2946,12 @@ namespace WinExplorer
         const int LEFT_OFF = 15;   // px from left to first item
         const int BTN_W    = 250;  // folder button width
         const int BTN_H    = 52;   // folder button height
-        const int DRV_H    = 66;   // drive  button height (room for progress bar)
+        const int DRV_H    = 52;   // drive button height = same as folder
         const int BTN_GAP  = 4;    // gap between buttons
-        const int ICO_SZ   = 48;   // icon render size  (per spec)
-        const int SEC_H    = 22;   // section header height
-        const int PROG_H   = 6;    // progress bar height
+        const int ICO_SZ   = 48;   // icon render size (per spec)
+        const int SEC_H    = 24;   // section header height (larger text)
+        const int PROG_H   = 13;   // progress bar height 189x13 per spec
+        const int PROG_W   = 189;  // progress bar width per spec
         const int SEC_GAP  = 6;    // space below last item row in a section
  
         // -- Colours ----------------------------------------------------------
@@ -2962,8 +2961,10 @@ namespace WinExplorer
         static readonly Color Prog_Trk = Color.FromArgb(0xE0,0xE0,0xE0);
         static readonly Color Prog_Bl  = Color.FromArgb(0x26,0xA0,0xDA);
         static readonly Color Prog_Rd  = Color.FromArgb(0xCA,0x17,0x00);
-        static readonly Color Sec_Txt  = Color.FromArgb(0x6C,0x6C,0x6C);
+        static readonly Color Sec_Txt  = Color.FromArgb(0x1E,0x32,0x87); // #1E3287
         static readonly Color Sec_Ln   = Color.FromArgb(0xD5,0xD5,0xD5);
+        static readonly Color Free_Txt = Color.FromArgb(0x6A,0x6C,0x6D); // #6A6C6D
+        static readonly Color Drv_Brd  = Color.FromArgb(0xBC,0xBC,0xBC); // progress bar border
         static readonly Color Chev_Clr = Color.FromArgb(0x59,0x59,0x59);
  
         // -- Data model -------------------------------------------------------
@@ -2988,7 +2989,9 @@ namespace WinExplorer
         readonly List<(PcItem item,Rectangle rect)> _itemMap = new List<(PcItem,Rectangle)>();
         readonly List<(PcSection sec,Rectangle rect)> _secMap  = new List<(PcSection,Rectangle)>();
         int        _totalH, _scrollY;
-        PcItem     _hovItem, _selItem;
+        PcItem     _hovItem, _selItem, _prsItem;
+        bool       _marquee; Point _mqA, _mqB;
+        ContextMenuStrip _ctxMenu;
         VScrollBar _vsb;
  
         public event Action<string> FolderActivated;   // fires with RealPath on double-click
@@ -3002,13 +3005,16 @@ namespace WinExplorer
             _vsb.ValueChanged += (s,e)=>{ _scrollY=_vsb.Value; Invalidate(); };
             Controls.Add(_vsb);
             MouseMove        += OnMM;
-            MouseLeave       += (s,e)=>{ _hovItem=null; Invalidate(); };
+            MouseLeave       += (s,e)=>{ _hovItem=null; _prsItem=null; Invalidate(); };
             MouseDown        += OnMDn;
+            MouseUp          += OnMUp;
             MouseDoubleClick += OnMDC;
             MouseWheel       += OnMW;
+            KeyDown          += OnKD;
             Resize           += (s,e)=>{ BuildLayout(); Invalidate(); };
             LoadSections();
             BuildLayout();
+            BuildContextMenu();
         }
  
         // -- Section / item data loading ---------------------------------------
@@ -3084,23 +3090,24 @@ namespace WinExplorer
         static Image LoadCat48(string icoName, string realPath)
         {
             string dir = Path.GetDirectoryName(Application.ExecutablePath)??"";
-            foreach (var fn in new[]{icoName+".png",
-                                     icoName.Replace("category_","")+".png",
-                                     icoName.Replace("category_","")+"_48.png"})
+            string base_ = icoName.Replace("category_","");
+            foreach (var fn in new[]{ base_+"_folder.png", icoName+"_folder.png",
+                                      icoName+".png", base_+".png", base_+"_48.png" })
             {
                 string fp = Path.Combine(dir,"icons","Win10",fn);
                 if (File.Exists(fp)) try{ return Scale48(Image.FromFile(fp)); }catch{}
             }
             if (realPath!=null && Directory.Exists(realPath))
             { var img=Shell.LargeIconForced(realPath); if(img!=null) return Scale48(img); }
-            string key = icoName.Replace("category_","");
-            var sm = Icons.Get(key); return sm!=null ? Scale48(sm) : null;
+            var sm = Icons.Get(base_); return sm!=null ? Scale48(sm) : null;
         }
         static Image LoadDrv48(string drvPath)
         {
-            var img = Shell.LargeIconForced(drvPath);
-            if (img!=null) return Scale48(img);
-            var fb = Icons.Get("drives"); return fb!=null ? Scale48(fb) : null;
+            string dir = Path.GetDirectoryName(Application.ExecutablePath)??"";
+            foreach(var fn in new[]{"drive_folder.png","hdd_folder.png","drives_folder.png"})
+            { string fp=Path.Combine(dir,"icons","Win10",fn); if(File.Exists(fp))try{return Scale48(Image.FromFile(fp));}catch{} }
+            var img=Shell.LargeIconForced(drvPath); if(img!=null) return Scale48(img);
+            var fb=Icons.Get("drives"); return fb!=null ? Scale48(fb) : null;
         }
         static Image Scale48(Image src)
         {
@@ -3181,77 +3188,85 @@ namespace WinExplorer
                 if (dr.Bottom<0 || dr.Top>Height) continue;
                 if (it.IsDrive) PaintDrive(g,it,dr); else PaintFolder(g,it,dr);
             }
+            PaintMarquee(g);
         }
  
+        static readonly Font SecFont = new Font("Segoe UI", 10.5f, FontStyle.Regular);
+
         void PaintSecHdr(Graphics g, PcSection sec, Rectangle r, int avail)
         {
             int dy = r.Y - _scrollY;
             if (dy+r.Height<0 || dy>Height) return;
-            // ? / ?  chevron
             int cx=13, cy=dy+r.Height/2;
-            using(var b=new SolidBrush(Chev_Clr))
+            using(var b=new SolidBrush(Sec_Txt))
             {
                 if(sec.Collapsed) g.FillPolygon(b,new[]{new Point(cx-3,cy-4),new Point(cx+3,cy),new Point(cx-3,cy+4)});
                 else              g.FillPolygon(b,new[]{new Point(cx-4,cy-2),new Point(cx+4,cy-2),new Point(cx,cy+3)});
             }
-            // Title + separator line
             using(var tb=new SolidBrush(Sec_Txt))
             using(var fmt=new StringFormat{LineAlignment=StringAlignment.Center,Trimming=StringTrimming.EllipsisCharacter})
             {
-                var sz = g.MeasureString(sec.Title, Th.UiSmall);
-                g.DrawString(sec.Title, Th.UiSmall, tb, new RectangleF(22,dy,sz.Width+2,r.Height), fmt);
+                var sz = g.MeasureString(sec.Title, SecFont);
+                g.DrawString(sec.Title, SecFont, tb, new RectangleF(22,dy,sz.Width+2,r.Height), fmt);
                 int lx=(int)(22+sz.Width+6), ly=dy+r.Height/2;
                 using(var p=new Pen(Sec_Ln)) g.DrawLine(p, lx, ly, avail-15, ly);
             }
         }
- 
         void PaintFolder(Graphics g, PcItem it, Rectangle r)
         {
             PaintBg(g,it,r);
-            // Icon – 48×48 px per spec, 4 px from left edge
             int ix=r.X+4, iy=r.Y+(r.Height-ICO_SZ)/2;
             if(it.Icon!=null) g.DrawImage(it.Icon, ix, iy, ICO_SZ, ICO_SZ);
-            // Label – right of icon, vertically centred
             int tx=ix+ICO_SZ+8;
             using(var b=new SolidBrush(Th.TxtColor))
-            using(var fmt=new StringFormat{LineAlignment=StringAlignment.Center,
+            using(var fmt=new StringFormat{LineAlignment=StringAlignment.Near,
                                            Trimming=StringTrimming.EllipsisCharacter,
                                            FormatFlags=StringFormatFlags.NoWrap})
-                g.DrawString(it.Name, Th.UiFont, b, new RectangleF(tx,r.Y,r.Right-tx-4,r.Height), fmt);
+                g.DrawString(it.Name, Th.UiFont, b, new RectangleF(tx, r.Y+4, r.Right-tx-4, r.Height-4), fmt);
         }
- 
         void PaintDrive(Graphics g, PcItem it, Rectangle r)
         {
             PaintBg(g,it,r);
-            // Icon
-            int ix=r.X+4, iy=r.Y+4;
+            int ix=r.X+4, iy=r.Y+(r.Height-ICO_SZ)/2;
             if(it.Icon!=null) g.DrawImage(it.Icon, ix, iy, ICO_SZ, ICO_SZ);
-            // Text column
-            int tx=ix+ICO_SZ+8, tw=r.Right-tx-4;
+            int tx=r.X+4+ICO_SZ+8, tw=r.Right-tx-4;
             using(var nb=new SolidBrush(Th.TxtColor))
             using(var fmt=new StringFormat{Trimming=StringTrimming.EllipsisCharacter,FormatFlags=StringFormatFlags.NoWrap})
-                g.DrawString(it.Name, Th.UiFont, nb, new RectangleF(tx,r.Y+5,tw,17), fmt);
-            if(it.FreeStr!=null)
-                using(var sb2=new SolidBrush(Sec_Txt))
-                using(var fmt=new StringFormat{Trimming=StringTrimming.EllipsisCharacter,FormatFlags=StringFormatFlags.NoWrap})
-                    g.DrawString($"{it.FreeStr} free of {it.TotalStr}", Th.UiSmall, sb2, new RectangleF(tx,r.Y+21,tw,16), fmt);
-            // Progress bar
-            int py=r.Bottom-PROG_H-5, px2=r.X+4, pw=r.Width-8;
-            using(var trk=new SolidBrush(Prog_Trk)) g.FillRectangle(trk, px2, py, pw, PROG_H);
-            int fw=(int)(pw*(100.0-it.FreePct)/100.0);
+                g.DrawString(it.Name, Th.UiFont, nb, new RectangleF(tx, r.Y+4, tw, 17), fmt);
+            int barX=tx, barY=r.Y+22;
+            using(var trk=new SolidBrush(Prog_Trk)) g.FillRectangle(trk, barX, barY, PROG_W, PROG_H);
+            int fw=(int)(PROG_W*(100.0-it.FreePct)/100.0);
             if(fw>0)
                 using(var fb=new SolidBrush(it.FreePct<10.0?Prog_Rd:Prog_Bl))
-                    g.FillRectangle(fb, px2, py, Math.Min(fw,pw), PROG_H);
+                    g.FillRectangle(fb, barX, barY, Math.Min(fw,PROG_W), PROG_H);
+            using(var bp=new Pen(Drv_Brd)) g.DrawRectangle(bp, barX, barY, PROG_W, PROG_H);
+            if(it.FreeStr!=null)
+                using(var sb2=new SolidBrush(Free_Txt))
+                using(var fmt=new StringFormat{Trimming=StringTrimming.EllipsisCharacter,FormatFlags=StringFormatFlags.NoWrap})
+                    g.DrawString($"{it.FreeStr} free of {it.TotalStr}", Th.UiSmall, sb2,
+                                 new RectangleF(tx, barY+PROG_H+2, tw, 16), fmt);
         }
- 
         void PaintBg(Graphics g, PcItem it, Rectangle r)
         {
-            bool sel=it==_selItem, hov=it==_hovItem;
-            if(sel){ using(var b=new SolidBrush(Sel_Bg))   g.FillRectangle(b,r); using(var p=new Pen(Hov_Brd)) g.DrawRectangle(p,r.X,r.Y,r.Width-1,r.Height-1); }
-            else if(hov){ using(var b=new SolidBrush(Hov_Bg)) g.FillRectangle(b,r); using(var p=new Pen(Hov_Brd)) g.DrawRectangle(p,r.X,r.Y,r.Width-1,r.Height-1); }
+            bool sel=it==_selItem, hov=it==_hovItem, prs=it==_prsItem;
+            if(prs||sel)
+            { using(var b=new SolidBrush(Sel_Bg)) g.FillRectangle(b,r); using(var p=new Pen(Hov_Brd)) g.DrawRectangle(p,r.X,r.Y,r.Width-1,r.Height-1); }
+            else if(hov)
+            { using(var b=new SolidBrush(Hov_Bg)) g.FillRectangle(b,r); using(var p=new Pen(Hov_Brd)) g.DrawRectangle(p,r.X,r.Y,r.Width-1,r.Height-1); }
         }
- 
-        // -- Hit testing -------------------------------------------------------
+
+        void PaintMarquee(Graphics g)
+        {
+            if(!_marquee) return;
+            var mr=MarqueeRect();
+            using(var fill=new SolidBrush(Color.FromArgb(80,0x99,0xD1,0xFF))) g.FillRectangle(fill,mr);
+            using(var pen=new Pen(Color.FromArgb(0x99,0xD1,0xFF))) g.DrawRectangle(pen,mr.X,mr.Y,mr.Width-1,mr.Height-1);
+        }
+        Rectangle MarqueeRect()
+        {
+            int x=Math.Min(_mqA.X,_mqB.X), y=Math.Min(_mqA.Y,_mqB.Y);
+            return new Rectangle(x,y,Math.Abs(_mqA.X-_mqB.X),Math.Abs(_mqA.Y-_mqB.Y));
+        }
         PcItem ItemAt(Point pt)
         {
             int cy=pt.Y+_scrollY;
@@ -3267,31 +3282,91 @@ namespace WinExplorer
             return null;
         }
  
+
         // -- Mouse handlers ----------------------------------------------------
         void OnMM(object s, MouseEventArgs e)
-        { var it=ItemAt(e.Location); if(it!=_hovItem){_hovItem=it;Invalidate();} }
- 
+        {
+            var it=ItemAt(e.Location);
+            if(it!=_hovItem){_hovItem=it;Invalidate();}
+            if(_marquee){_mqB=e.Location;UpdateMqSel();Invalidate();}
+        }
+
         void OnMDn(object s, MouseEventArgs e)
         {
-            if(e.Button!=MouseButtons.Left) return;
-            var sec=SecAt(e.Location);
-            if(sec!=null){ sec.Collapsed=!sec.Collapsed; BuildLayout(); Invalidate(); return; }
-            var it=ItemAt(e.Location);
-            if(it!=null){ _selItem=it; Invalidate(); }
+            if(e.Button==MouseButtons.Left)
+            {
+                var sec=SecAt(e.Location);
+                if(sec!=null){ sec.Collapsed=!sec.Collapsed; BuildLayout(); Invalidate(); return; }
+                var it=ItemAt(e.Location);
+                if(it!=null){ _prsItem=it; _selItem=it; _marquee=false; Capture=true; }
+                else { _selItem=null; _prsItem=null; _marquee=true; _mqA=_mqB=e.Location; Capture=true; }
+                Invalidate();
+            }
+            else if(e.Button==MouseButtons.Right)
+            {
+                var it=ItemAt(e.Location);
+                if(it!=null){ _selItem=it; _prsItem=null; Invalidate(); ShowItemMenu(it,e.Location); }
+                else { _selItem=null; _prsItem=null; Invalidate(); ShowBgMenu(e.Location); }
+            }
         }
- 
+
+        void OnMUp(object s, MouseEventArgs e)
+        {
+            _prsItem=null; Capture=false;
+            if(_marquee){ _marquee=false; Invalidate(); }
+        }
+
         void OnMDC(object s, MouseEventArgs e)
         {
             if(e.Button!=MouseButtons.Left) return;
             var it=ItemAt(e.Location);
             if(it?.RealPath!=null) FolderActivated?.Invoke(it.RealPath);
         }
- 
+
         void OnMW(object s, MouseEventArgs e)
         {
             _scrollY=Math.Max(0,_scrollY-e.Delta/3);
-            if(_vsb.Visible){ _scrollY=Math.Min(_scrollY,Math.Max(0,_vsb.Maximum-_vsb.LargeChange)); try{_vsb.Value=_scrollY;}catch{} }
+            if(_vsb.Visible){_scrollY=Math.Min(_scrollY,Math.Max(0,_vsb.Maximum-_vsb.LargeChange));try{_vsb.Value=_scrollY;}catch{}}
             Invalidate();
+        }
+
+        void OnKD(object s, KeyEventArgs e)
+        { if(e.KeyCode==Keys.Escape){_selItem=null;_prsItem=null;_marquee=false;Invalidate();} }
+
+        void UpdateMqSel()
+        {
+            // Map marquee back to document coordinates (add scroll offset)
+            var mq = MarqueeRect();
+            var mqS = new Rectangle(mq.X, mq.Y + _scrollY, mq.Width, mq.Height);
+            // Only select a single item whose centre falls inside the marquee
+            // (avoids accidental multi-hit; each button is its own discrete target)
+            PcItem hit = null;
+            foreach (var (it, r) in _itemMap)
+            {
+                Point centre = new Point(r.X + r.Width/2, r.Y + r.Height/2);
+                if (mqS.Contains(centre)) { hit = it; break; }
+            }
+            _selItem = hit;
+        }
+
+        void BuildContextMenu()
+        {
+            _ctxMenu=MI.MakeMenu();
+            _ctxMenu.Items.Add(MI.Item("Open","folder",(s,e)=>{ if(_selItem?.RealPath!=null) FolderActivated?.Invoke(_selItem.RealPath); }));
+            _ctxMenu.Items.Add(MI.Item("Open in new window","folder",(s,e)=>{ if(_selItem?.RealPath!=null) try{System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(_selItem.RealPath){UseShellExecute=true});}catch{} }));
+            _ctxMenu.Items.Add(MI.Sep());
+            _ctxMenu.Items.Add(MI.Item("Pin to Quick access","quick_access",null));
+            _ctxMenu.Items.Add(MI.Sep());
+            _ctxMenu.Items.Add(MI.Item("Properties","properties",(s,e)=>{ if(_selItem?.RealPath!=null) PropertiesDialog.Show(_selItem.RealPath); }));
+        }
+        void ShowItemMenu(PcItem it, Point pt) { _ctxMenu.Show(this, pt); }
+        void ShowBgMenu(Point pt)
+        {
+            var bg=MI.MakeMenu();
+            bg.Items.Add(MI.Item("Refresh","refresh",(s,e)=>{ _sections.Clear(); LoadSections(); BuildLayout(); Invalidate(); }));
+            bg.Items.Add(MI.Sep());
+            bg.Items.Add(MI.Item("Properties","properties",null));
+            bg.Show(this, pt);
         }
     }
  
@@ -3432,9 +3507,8 @@ namespace WinExplorer
         }
         void ShowProps()
         {
-            // Show properties for selected item(s), or current folder if nothing selected
             string p = _content.FirstSelected?.FullPath ?? _content.CurrentPath;
-            if(p!=null && (System.IO.File.Exists(p)||System.IO.Directory.Exists(p)))
+            if(p!=null&&(System.IO.File.Exists(p)||System.IO.Directory.Exists(p)))
                 PropertiesDialog.Show(p);
         }
         void PerformDrop(string[] srcs,string dest)
@@ -3483,7 +3557,6 @@ namespace WinExplorer
     {
         readonly string _path;
         readonly bool   _isDir;
-        // Controls
         TabControl _tabs;
         TextBox    _nameBox;
         Label      _typeVal, _locVal, _sizeVal, _sizeOnDiskVal, _containsVal, _createdVal;
@@ -3491,159 +3564,131 @@ namespace WinExplorer
         Button     _btnAdvanced, _btnOK, _btnCancel, _btnApply;
         PictureBox _icon;
         FileSystemInfo _fsi;
-        FileAttributes _origAttribs;
 
         public PropertiesForm(string path, bool isDir)
         {
-            _path  = path;
-            _isDir = isDir;
-            _fsi   = isDir ? (FileSystemInfo)new DirectoryInfo(path) : new FileInfo(path);
-            _origAttribs = _fsi.Attributes;
-            BuildUI();
-            LoadData();
+            _path=path; _isDir=isDir;
+            _fsi = isDir ? (FileSystemInfo)new DirectoryInfo(path) : new FileInfo(path);
+            BuildUI(); LoadData();
         }
 
         void BuildUI()
         {
             Text            = System.IO.Path.GetFileName(_path) + " Properties";
-            Size            = new Size(390, 430);
+            ClientSize      = new Size(382, 418);
             FormBorderStyle = FormBorderStyle.FixedDialog;
-            MaximizeBox     = false;
-            MinimizeBox     = false;
+            MaximizeBox     = false; MinimizeBox=false;
             StartPosition   = FormStartPosition.CenterParent;
-            Font            = Th.UiFont;
-            BackColor       = SystemColors.Control;
+            Font=Th.UiFont; BackColor=SystemColors.Control;
 
-            // Icon + Name row
-            _icon = new PictureBox { Size=new Size(36,36), Location=new Point(12,12), SizeMode=PictureBoxSizeMode.StretchImage };
+            _icon = new PictureBox{ Size=new Size(36,36), Location=new Point(10,10),
+                                    SizeMode=PictureBoxSizeMode.StretchImage };
             var ico = Shell.LargeIconForced(_path) ?? Icons.Get(_isDir?"folder":"file");
-            if(ico!=null) _icon.Image = ico;
+            if(ico!=null) _icon.Image=ico;
             Controls.Add(_icon);
 
-            _nameBox = new TextBox { Location=new Point(58,20), Width=300, Font=Th.UiFont, Text=System.IO.Path.GetFileName(_path) };
+            _nameBox = new TextBox{ Location=new Point(54,18),
+                                    Width=ClientSize.Width-54-10, Height=22, Font=Th.UiFont };
             Controls.Add(_nameBox);
 
-            // Separator
-            var sep0 = new Panel { Location=new Point(0,62), Size=new Size(390,1), BackColor=Color.FromArgb(210,210,210) };
-            Controls.Add(sep0);
-
-            // Tab control
-            _tabs = new TabControl { Location=new Point(0,62), Size=new Size(390,300), Font=Th.UiFont };
-            var tabGen = new TabPage("General");
+            _tabs = new TabControl{ Location=new Point(0,58),
+                                    Size=new Size(ClientSize.Width, ClientSize.Height-58-38),
+                                    Font=Th.UiFont };
+            var tabGen = new TabPage("General"){ Padding=new Padding(3) };
             BuildGeneralTab(tabGen);
             _tabs.TabPages.Add(tabGen);
             Controls.Add(_tabs);
 
-            // Bottom buttons
-            _btnOK     = new Button { Text="OK",     Size=new Size(75,23), DialogResult=DialogResult.OK     };
-            _btnCancel = new Button { Text="Cancel",  Size=new Size(75,23), DialogResult=DialogResult.Cancel };
-            _btnApply  = new Button { Text="Apply",   Size=new Size(75,23) };
-            _btnOK    .Location = new Point( Width-3*75-2*6-12, Height-23-12 );
-            _btnCancel.Location = new Point( Width-2*75-1*6-12, Height-23-12 );
-            _btnApply .Location = new Point( Width-1*75      -12, Height-23-12 );
-            _btnOK    .Click += (s,e)=>{ ApplyAttributes(); Close(); };
-            _btnApply .Click += (s,e)=>  ApplyAttributes();
+            int bY=ClientSize.Height-28, bH=23, bW=75, g=6;
+            _btnApply  = new Button{ Text="Apply",  Size=new Size(bW,bH), Location=new Point(ClientSize.Width-bW-8,bY) };
+            _btnCancel = new Button{ Text="Cancel", Size=new Size(bW,bH), Location=new Point(ClientSize.Width-bW*2-g-8,bY), DialogResult=DialogResult.Cancel };
+            _btnOK     = new Button{ Text="OK",     Size=new Size(bW,bH), Location=new Point(ClientSize.Width-bW*3-g*2-8,bY), DialogResult=DialogResult.OK };
+            _btnOK   .Click += (s,e)=>{ ApplyAttributes(); Close(); };
+            _btnApply.Click += (s,e)=>  ApplyAttributes();
             Controls.Add(_btnOK); Controls.Add(_btnCancel); Controls.Add(_btnApply);
-            AcceptButton = _btnOK; CancelButton = _btnCancel;
+            AcceptButton=_btnOK; CancelButton=_btnCancel;
         }
 
         void BuildGeneralTab(TabPage p)
         {
-            p.BackColor = SystemColors.Control;
-            p.Padding   = new Padding(0);
-            int lx=8, rx=140, y=10, rowH=20, gap=6;
+            p.BackColor=SystemColors.Control; p.Padding=new Padding(0);
+            int lx=8, lw=118, rx=132, vw=220, y=8, rH=20, gap=4;
+            Color dark=Color.FromArgb(36,39,40), blue=Color.FromArgb(0,0,180);
 
-            Label L(string t){ var lb=new Label{Text=t,AutoSize=false,Width=125,Height=rowH,Location=new Point(lx,y),TextAlign=ContentAlignment.MiddleRight,ForeColor=Color.FromArgb(36,39,40)};p.Controls.Add(lb);return lb;}
-            Label R(string t="") { var lb=new Label{Text=t,AutoSize=false,Width=200,Height=rowH,Location=new Point(rx,y),TextAlign=ContentAlignment.MiddleLeft,ForeColor=Color.FromArgb(0,0,205)};p.Controls.Add(lb);return lb;}
-            Label R2(string t=""){ var lb=new Label{Text=t,AutoSize=false,Width=200,Height=rowH,Location=new Point(rx,y),TextAlign=ContentAlignment.MiddleLeft,ForeColor=Color.FromArgb(36,39,40)};p.Controls.Add(lb);return lb;}
+            Label Lbl(string t){ var l=new Label{Text=t,AutoSize=false,Size=new Size(lw,rH),Location=new Point(lx,y),TextAlign=ContentAlignment.MiddleRight,ForeColor=dark,Font=Th.UiFont};p.Controls.Add(l);return l; }
+            Label Val(Color c,string t=""){ var l=new Label{Text=t,AutoSize=false,Size=new Size(vw,rH),Location=new Point(rx,y),TextAlign=ContentAlignment.MiddleLeft,ForeColor=c,Font=Th.UiFont};p.Controls.Add(l);return l; }
+            void Sep(){ var s=new Panel{Location=new Point(lx,y),Size=new Size(lw+vw+6,1),BackColor=Color.FromArgb(210,210,210)};p.Controls.Add(s);y+=gap+1; }
 
-            L("Type:"); _typeVal=R2(); y+=rowH+gap;
-            L("Location:"); _locVal=R2(); y+=rowH+gap;
-
-            // Thin separator
-            var s1=new Panel{Location=new Point(8,y),Size=new Size(340,1),BackColor=Color.FromArgb(210,210,210)};p.Controls.Add(s1); y+=gap+1;
-
-            L("Size:"); _sizeVal=R(); y+=rowH+gap;
-            L("Size on disk:"); _sizeOnDiskVal=R(); y+=rowH+gap;
-            if(_isDir){ L("Contains:"); _containsVal=R2(); y+=rowH+gap; }
-
-            var s2=new Panel{Location=new Point(8,y),Size=new Size(340,1),BackColor=Color.FromArgb(210,210,210)};p.Controls.Add(s2); y+=gap+1;
-
-            L("Created:"); _createdVal=R2(); y+=rowH+gap;
-
-            var s3=new Panel{Location=new Point(8,y),Size=new Size(340,1),BackColor=Color.FromArgb(210,210,210)};p.Controls.Add(s3); y+=gap+1;
-
-            // Attributes
-            var attribLbl=new Label{Text="Attributes:",AutoSize=false,Width=125,Height=rowH,Location=new Point(lx,y),TextAlign=ContentAlignment.MiddleRight,ForeColor=Color.FromArgb(36,39,40)};p.Controls.Add(attribLbl);
-            _cbReadOnly=new CheckBox{Text="Read-only"+((_isDir)?" (Only applies to files in folder)":""),Location=new Point(rx,y),Width=220,Height=rowH,Font=Th.UiFont};
-            p.Controls.Add(_cbReadOnly); y+=rowH+2;
-
-            _cbHidden=new CheckBox{Text="Hidden",Location=new Point(rx,y),Width=100,Height=rowH,Font=Th.UiFont};
+            Lbl("Type:");      _typeVal=Val(dark);  y+=rH+gap;
+            Lbl("Location:");  _locVal=Val(dark);   y+=rH+gap;
+            Sep();
+            Lbl("Size:");          _sizeVal=Val(blue);       y+=rH+gap;
+            Lbl("Size on disk:");  _sizeOnDiskVal=Val(blue); y+=rH+gap;
+            if(_isDir){ Lbl("Contains:"); _containsVal=Val(dark); y+=rH+gap; }
+            Sep();
+            Lbl("Created:"); _createdVal=Val(dark); y+=rH+gap;
+            Sep();
+            Lbl("Attributes:");
+            _cbReadOnly=new CheckBox{Text="Read-only"+(_isDir?" (Only applies to files in folder)":""),
+                Location=new Point(rx,y),Width=vw,Height=rH,Font=Th.UiFont,ForeColor=blue};
+            p.Controls.Add(_cbReadOnly); y+=rH+3;
+            _cbHidden=new CheckBox{Text="Hidden",Location=new Point(rx,y),Width=90,Height=rH,Font=Th.UiFont};
             p.Controls.Add(_cbHidden);
-
-            _btnAdvanced=new Button{Text="Advanced...",Location=new Point(270,y-2),Width=75,Height=22,Font=Th.UiFont};
-            _btnAdvanced.Click+=(s,e)=>{using(var adv=new AdvancedAttributesForm(_path,_isDir))adv.ShowDialog(this);};
+            _btnAdvanced=new Button{Text="Advanced...",Location=new Point(rx+vw-75,y-2),Width=75,Height=22,Font=Th.UiFont};
+            _btnAdvanced.Click+=(s,e)=>{ using(var adv=new AdvancedAttributesForm(_path,_isDir)) adv.ShowDialog(this); };
             p.Controls.Add(_btnAdvanced);
         }
 
         void LoadData()
         {
-            string name = System.IO.Path.GetFileName(_path);
-            _nameBox.Text = name;
-            _typeVal .Text = _isDir ? "File folder" : (Shell.TypeName(_path));
-            _locVal  .Text = System.IO.Path.GetDirectoryName(_path) ?? _path;
+            _nameBox.Text    = System.IO.Path.GetFileName(_path);
+            _typeVal.Text    = _isDir ? "File folder" : (Shell.TypeName(_path) ?? "File");
+            _locVal.Text     = System.IO.Path.GetDirectoryName(_path) ?? _path;
             _createdVal.Text = _fsi.CreationTime.ToString("dddd, MMMM d, yyyy, h:mm:ss tt");
             _cbReadOnly.Checked = (_fsi.Attributes & FileAttributes.ReadOnly) != 0;
             _cbHidden  .Checked = (_fsi.Attributes & FileAttributes.Hidden)   != 0;
-
             if(_isDir)
             {
-                // Compute size async
-                _sizeVal.Text = "Calculating...";
-                _sizeOnDiskVal.Text = "Calculating...";
-                _containsVal.Text   = "Calculating...";
-                System.Threading.ThreadPool.QueueUserWorkItem(_=>
-                {
+                _sizeVal.Text=_sizeOnDiskVal.Text="Calculating...";
+                if(_containsVal!=null) _containsVal.Text="Calculating...";
+                System.Threading.ThreadPool.QueueUserWorkItem(_=>{
                     long bytes=0,onDisk=0; int files=0,dirs=0;
                     try{ CalcDir(_path,ref bytes,ref onDisk,ref files,ref dirs); }catch{}
-                    string szStr  = FormatBytes(bytes)+" ("+bytes.ToString("N0")+" bytes)";
-                    string dskStr = FormatBytes(onDisk)+" ("+onDisk.ToString("N0")+" bytes)";
-                    string cntStr = files.ToString("N0")+" Files, "+dirs.ToString("N0")+" Folders";
-                    try{ Invoke((Action)(()=>{ if(IsDisposed)return; _sizeVal.Text=szStr; _sizeOnDiskVal.Text=dskStr; _containsVal.Text=cntStr; })); }catch{}
+                    string sz  = FmtBytes(bytes)+" ("+bytes.ToString("N0")+" bytes)";
+                    string dsk = FmtBytes(onDisk)+" ("+onDisk.ToString("N0")+" bytes)";
+                    string cnt = files.ToString("N0")+" Files, "+dirs.ToString("N0")+" Folders";
+                    try{ Invoke((Action)(()=>{ if(IsDisposed)return; _sizeVal.Text=sz; _sizeOnDiskVal.Text=dsk; if(_containsVal!=null)_containsVal.Text=cnt; })); }catch{}
                 });
             }
             else
             {
                 var fi=(FileInfo)_fsi;
-                _sizeVal      .Text = FormatBytes(fi.Length)+" ("+fi.Length.ToString("N0")+" bytes)";
-                long clus = ((fi.Length+4095)/4096)*4096;
-                _sizeOnDiskVal.Text = FormatBytes(clus)+" ("+clus.ToString("N0")+" bytes)";
+                _sizeVal.Text      = FmtBytes(fi.Length)+" ("+fi.Length.ToString("N0")+" bytes)";
+                long clus=((fi.Length+4095)/4096)*4096;
+                _sizeOnDiskVal.Text= FmtBytes(clus)+" ("+clus.ToString("N0")+" bytes)";
             }
         }
 
         void ApplyAttributes()
         {
-            try
-            {
-                var a = _fsi.Attributes;
-                if(_cbReadOnly.Checked) a|=FileAttributes.ReadOnly; else a&=~FileAttributes.ReadOnly;
-                if(_cbHidden  .Checked) a|=FileAttributes.Hidden;   else a&=~FileAttributes.Hidden;
-                _fsi.Attributes = a;
-            }
-            catch(Exception ex){ MessageBox.Show(ex.Message,"Error",MessageBoxButtons.OK,MessageBoxIcon.Error); }
+            try{
+                var a=_fsi.Attributes;
+                if(_cbReadOnly.Checked)a|=FileAttributes.ReadOnly; else a&=~FileAttributes.ReadOnly;
+                if(_cbHidden  .Checked)a|=FileAttributes.Hidden;   else a&=~FileAttributes.Hidden;
+                _fsi.Attributes=a;
+            }catch(Exception ex){ MessageBox.Show(ex.Message,"Error",MessageBoxButtons.OK,MessageBoxIcon.Error); }
         }
 
         static void CalcDir(string d,ref long bytes,ref long onDisk,ref int files,ref int dirs)
         {
-            try
-            {
+            try{
                 foreach(var f in Directory.GetFiles(d))
                     try{ var fi=new FileInfo(f); bytes+=fi.Length; onDisk+=((fi.Length+4095)/4096)*4096; files++; }catch{}
                 foreach(var sub in Directory.GetDirectories(d))
                     try{ dirs++; CalcDir(sub,ref bytes,ref onDisk,ref files,ref dirs); }catch{}
             }catch{}
         }
-        static string FormatBytes(long b)
+        static string FmtBytes(long b)
         {
             if(b>=1L<<40) return ((double)b/(1L<<40)).ToString("F1")+" TB";
             if(b>=1L<<30) return ((double)b/(1L<<30)).ToString("F1")+" GB";
@@ -3656,59 +3701,52 @@ namespace WinExplorer
     class AdvancedAttributesForm : Form
     {
         CheckBox _cbArchive, _cbIndex, _cbCompress, _cbEncrypt;
-        Button   _btnOK, _btnCancel;
-        readonly string _path;
-        readonly bool   _isDir;
+        readonly string _path; readonly bool _isDir;
 
         public AdvancedAttributesForm(string path, bool isDir)
-        {
-            _path=path; _isDir=isDir;
-            BuildUI();
-            LoadData();
-        }
+        { _path=path; _isDir=isDir; BuildUI(); LoadData(); }
+
         void BuildUI()
         {
-            Text            = "Advanced Attributes";
-            Size            = new Size(390,270);
-            FormBorderStyle = FormBorderStyle.FixedDialog;
-            MaximizeBox     = false; MinimizeBox=false;
-            StartPosition   = FormStartPosition.CenterParent;
-            Font            = Th.UiFont;
-            BackColor       = SystemColors.Control;
+            Text="Advanced Attributes"; ClientSize=new Size(382,265);
+            FormBorderStyle=FormBorderStyle.FixedDialog;
+            MaximizeBox=false; MinimizeBox=false;
+            StartPosition=FormStartPosition.CenterParent;
+            Font=Th.UiFont; BackColor=SystemColors.Control;
 
-            // Icon + description
             var pb=new PictureBox{Size=new Size(32,32),Location=new Point(12,12),SizeMode=PictureBoxSizeMode.StretchImage};
             var ico=Icons.Get("properties"); if(ico!=null)pb.Image=ico; Controls.Add(pb);
-            var desc=new Label{Text="Choose the settings you want for this folder.",Location=new Point(54,12),Width=310,Height=58,Font=Th.UiFont};
+            var desc=new Label{
+                Text="Choose the settings you want for this folder. When you click OK or Apply on the Properties dialog, you will be asked if you want the changes to affect all subfolders and files as well.",
+                Location=new Point(54,12),Width=312,Height=60,Font=Th.UiFont,ForeColor=Color.FromArgb(36,39,40)};
             Controls.Add(desc);
-            var s0=new Panel{Location=new Point(0,74),Size=new Size(390,1),BackColor=Color.FromArgb(200,200,200)};Controls.Add(s0);
+            var s0=new Panel{Location=new Point(0,76),Size=new Size(382,1),BackColor=Color.FromArgb(200,200,200)};Controls.Add(s0);
 
-            // Archive & Index group
-            var gbA=new Label{Text="Archive and Index attributes",Location=new Point(12,82),Width=350,Height=16,Font=new Font("Segoe UI",9f,FontStyle.Regular),ForeColor=Color.FromArgb(60,60,60)};Controls.Add(gbA);
-            _cbArchive=new CheckBox{Text="Folder is ready for archiving",Location=new Point(20,104),Width=320,Height=18,Font=Th.UiFont};Controls.Add(_cbArchive);
+            var gbA=new Label{Text="Archive and Index attributes",Location=new Point(12,84),Width=340,Height=16,Font=new Font("Segoe UI",9f),ForeColor=Color.FromArgb(60,60,60)};Controls.Add(gbA);
+            _cbArchive=new CheckBox{Text="Folder is ready for archiving",Location=new Point(20,104),Width=330,Height=18,Font=Th.UiFont};Controls.Add(_cbArchive);
             _cbIndex  =new CheckBox{Text="Allow files in this folder to have contents indexed in addition to file properties",Location=new Point(20,126),Width=340,Height=30,Font=Th.UiFont};Controls.Add(_cbIndex);
-            var s1=new Panel{Location=new Point(0,162),Size=new Size(390,1),BackColor=Color.FromArgb(200,200,200)};Controls.Add(s1);
+            var s1=new Panel{Location=new Point(0,162),Size=new Size(382,1),BackColor=Color.FromArgb(200,200,200)};Controls.Add(s1);
 
-            // Compress & Encrypt group
-            var gbC=new Label{Text="Compress or Encrypt attributes",Location=new Point(12,170),Width=350,Height=16,Font=new Font("Segoe UI",9f,FontStyle.Regular),ForeColor=Color.FromArgb(60,60,60)};Controls.Add(gbC);
-            _cbCompress=new CheckBox{Text="Compress contents to save disk space",Location=new Point(20,192),Width=320,Height=18,Font=Th.UiFont};Controls.Add(_cbCompress);
-            _cbEncrypt =new CheckBox{Text="Encrypt contents to secure data",Location=new Point(20,214),Width=320,Height=18,Font=Th.UiFont};Controls.Add(_cbEncrypt);
+            var gbC=new Label{Text="Compress or Encrypt attributes",Location=new Point(12,170),Width=340,Height=16,Font=new Font("Segoe UI",9f),ForeColor=Color.FromArgb(60,60,60)};Controls.Add(gbC);
+            _cbCompress=new CheckBox{Text="Compress contents to save disk space",Location=new Point(20,192),Width=330,Height=18,Font=Th.UiFont};Controls.Add(_cbCompress);
+            _cbEncrypt =new CheckBox{Text="Encrypt contents to secure data",    Location=new Point(20,214),Width=200,Height=18,Font=Th.UiFont};Controls.Add(_cbEncrypt);
+            var btnDet=new Button{Text="Details",Location=new Point(270,212),Width=60,Height=22,Font=Th.UiFont,Enabled=false};Controls.Add(btnDet);
 
-            _btnOK    =new Button{Text="OK",    Size=new Size(75,23),Location=new Point(Width-2*75-12,Height-23-12),DialogResult=DialogResult.OK};
-            _btnCancel=new Button{Text="Cancel",Size=new Size(75,23),Location=new Point(Width-75-6,Height-23-12),DialogResult=DialogResult.Cancel};
-            _btnOK.Click+=(s,e)=>ApplyData();
-            Controls.Add(_btnOK); Controls.Add(_btnCancel);
-            AcceptButton=_btnOK; CancelButton=_btnCancel;
+            int bY=ClientSize.Height-28, bW=75, g=6;
+            var btnOK    =new Button{Text="OK",    Size=new Size(bW,23),Location=new Point(ClientSize.Width-bW*2-g-8,bY),DialogResult=DialogResult.OK};
+            var btnCancel=new Button{Text="Cancel",Size=new Size(bW,23),Location=new Point(ClientSize.Width-bW  -  8,bY),DialogResult=DialogResult.Cancel};
+            btnOK.Click+=(s,e)=>ApplyData();
+            Controls.Add(btnOK); Controls.Add(btnCancel);
+            AcceptButton=btnOK; CancelButton=btnCancel;
         }
         void LoadData()
         {
             try{
-                var a=new FileSystemInfo[]{}.GetType(); // dummy
                 var fi=_isDir?(FileSystemInfo)new DirectoryInfo(_path):new FileInfo(_path);
-                _cbArchive .Checked=(fi.Attributes&FileAttributes.Archive)  !=0;
+                _cbArchive .Checked=(fi.Attributes&FileAttributes.Archive)         !=0;
                 _cbIndex   .Checked=(fi.Attributes&FileAttributes.NotContentIndexed)==0; // inverted
-                _cbCompress.Checked=(fi.Attributes&FileAttributes.Compressed)!=0;
-                _cbEncrypt .Checked=(fi.Attributes&FileAttributes.Encrypted)!=0;
+                _cbCompress.Checked=(fi.Attributes&FileAttributes.Compressed)       !=0;
+                _cbEncrypt .Checked=(fi.Attributes&FileAttributes.Encrypted)        !=0;
             }catch{}
         }
         void ApplyData()
@@ -3716,13 +3754,12 @@ namespace WinExplorer
             try{
                 var fi=_isDir?(FileSystemInfo)new DirectoryInfo(_path):new FileInfo(_path);
                 var a=fi.Attributes;
-                if(_cbArchive.Checked)a|=FileAttributes.Archive;else a&=~FileAttributes.Archive;
-                if(!_cbIndex.Checked)a|=FileAttributes.NotContentIndexed;else a&=~FileAttributes.NotContentIndexed;
-                // Compress and Encrypt can't both be set; OS handles conflict
+                if(_cbArchive .Checked)a|=FileAttributes.Archive;  else a&=~FileAttributes.Archive;
+                if(!_cbIndex  .Checked)a|=FileAttributes.NotContentIndexed; else a&=~FileAttributes.NotContentIndexed;
                 if(_cbCompress.Checked)a|=FileAttributes.Compressed; else a&=~FileAttributes.Compressed;
                 if(_cbEncrypt .Checked)a|=FileAttributes.Encrypted;  else a&=~FileAttributes.Encrypted;
                 fi.Attributes=a;
-            }catch(Exception ex){MessageBox.Show(ex.Message,"Error",MessageBoxButtons.OK,MessageBoxIcon.Error);}
+            }catch(Exception ex){ MessageBox.Show(ex.Message,"Error",MessageBoxButtons.OK,MessageBoxIcon.Error); }
         }
     }
 }
